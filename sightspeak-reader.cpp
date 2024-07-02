@@ -489,6 +489,8 @@ void ReadElementText(CComPtr<IUIAutomationElement> pElement, ConcurrentQueue<Tex
         CComPtr<IUIAutomationTextPattern> pTextPattern = NULL;
         HRESULT hr = pElement->GetCurrentPatternAs(UIA_TextPatternId, IID_PPV_ARGS(&pTextPattern)); // Get TextPattern from element
         if (SUCCEEDED(hr) && pTextPattern) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100)); // Delay to ensure the text is ready for extraction
+
             CComPtr<IUIAutomationTextRange> pTextRange = NULL;
             hr = pTextPattern->get_DocumentRange(&pTextRange); // Get document range from TextPattern
             if (SUCCEEDED(hr) && pTextRange) {
@@ -518,28 +520,17 @@ void ReadElementText(CComPtr<IUIAutomationElement> pElement, ConcurrentQueue<Tex
                                 SafeArrayDestroy(pRects); // Destroy the safe array
                             }
                             textRectQueue.push({ textStr, rect }); // Add text and its rectangle to the queue
-                            DebugLog(L"Read text: " + textStr);
+                            DebugLog(L"Text and bounding rectangle pushed to queue.");
                         }
-                        else {
-                            DebugLog(L"Text length exceeded maximum allowed length.");
-                        }
-                    }
-                    else {
-                        DebugLog(L"Text already processed or empty.");
                     }
                 }
                 else {
                     DebugLog(L"Failed to get text from text range: " + std::to_wstring(hr));
-                    return; // Exit if text retrieval fails
                 }
             }
             else {
                 DebugLog(L"Failed to get document range: " + std::to_wstring(hr));
-                return; // Exit if document range retrieval fails
             }
-        }
-        else {
-            DebugLog(L"Element does not support TextPattern: " + std::to_wstring(hr));
         }
 
         CComBSTR name;
@@ -554,28 +545,18 @@ void ReadElementText(CComPtr<IUIAutomationElement> pElement, ConcurrentQueue<Tex
                     hr = pElement->get_CurrentBoundingRectangle(&rect); // Get bounding rectangle of the element
                     if (SUCCEEDED(hr)) {
                         textRectQueue.push({ nameStr, rect }); // Add name and its rectangle to the queue
-                        DebugLog(L"Read element name: " + nameStr);
-                    }
-                    else {
-                        DebugLog(L"Failed to get bounding rectangle.");
+                        DebugLog(L"Element name and bounding rectangle pushed to queue.");
                     }
                 }
-                else {
-                    DebugLog(L"Element name length exceeded maximum allowed length.");
-                }
             }
-            else {
-                DebugLog(L"Element name already processed or empty.");
-            }
-        }
-        else {
-            DebugLog(L"Failed to get element name: " + std::to_wstring(hr));
         }
     }
     catch (const std::exception& e) {
         DebugLog(L"Exception in ReadElementText: " + Utf8ToWstring(e.what()));
     }
 }
+
+
 
 // Collect UI elements using depth-first search
 void CollectElementsDFS(CComPtr<IUIAutomationElement> pElement, std::vector<CComPtr<IUIAutomationElement>>& elements, int maxDepth, int maxChildren, int maxElements) {
@@ -648,7 +629,8 @@ void ProcessCursorPosition(POINT point) {
         }
         DebugLog(L"New element detected.");
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(50)); // Sleep briefly to stabilize detection
+        // Consider reducing or removing this sleep
+        std::this_thread::sleep_for(std::chrono::milliseconds(10)); // Sleep briefly to stabilize detection (reduced to 10 ms)
         {
             std::lock_guard<std::mutex> lock(mtx);
             newElementDetected.store(false); // Reset the flag after sleep
@@ -732,6 +714,7 @@ void ProcessCursorPosition(POINT point) {
     }
 }
 
+
 // Worker thread function to process cursor movements
 void WorkerThread() {
     while (!stopWorker.load()) {
@@ -748,7 +731,7 @@ void WorkerThread() {
 // Thread function to check cursor movement
 void CheckCursorMovement() {
     while (!stopWorker.load()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(300)); // Sleep briefly before checking cursor movement
+        std::this_thread::sleep_for(std::chrono::milliseconds(50)); // Sleep briefly before checking cursor movement
 
         auto now = std::chrono::steady_clock::now();
         if (cursorMoving.load() && std::chrono::duration_cast<std::chrono::milliseconds>(now - lastCursorMoveTime).count() > 150) {
