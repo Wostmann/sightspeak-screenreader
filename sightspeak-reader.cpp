@@ -18,6 +18,7 @@
 #include <fstream>
 #include <queue>
 
+// ConcurrentQueue class definition to handle thread-safe queues
 template <typename T>
 class ConcurrentQueue {
 public:
@@ -60,12 +61,12 @@ public:
     }
 
 private:
-    mutable std::mutex mutex_;
-    std::queue<T> queue_;
-    std::condition_variable condition_;
+    mutable std::mutex mutex_;  // Mutex to protect the queue
+    std::queue<T> queue_;       // Standard queue to hold elements
+    std::condition_variable condition_;  // Condition variable for synchronization
 };
 
-// Utility functions for string conversion
+// Utility function to convert UTF-8 string to wide string
 std::wstring Utf8ToWstring(const std::string& str) {
     if (str.empty()) return std::wstring();
     int size_needed = MultiByteToWideChar(CP_UTF8, 0, &str[0], (int)str.size(), NULL, 0);
@@ -74,6 +75,7 @@ std::wstring Utf8ToWstring(const std::string& str) {
     return wstrTo;
 }
 
+// Utility function to convert wide string to UTF-8 string
 std::string WstringToUtf8(const std::wstring& wstr) {
     if (wstr.empty()) return std::string();
     int size_needed = WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), NULL, 0, NULL, NULL);
@@ -82,6 +84,7 @@ std::string WstringToUtf8(const std::wstring& wstr) {
     return strTo;
 }
 
+// Structure to hold text and its associated rectangle
 struct TextRect {
     std::wstring text;
     RECT rect;
@@ -125,16 +128,14 @@ const int MAX_ELEMENTS = 200; // Maximum number of UI elements to process
 std::chrono::time_point<std::chrono::steady_clock> lastRectangleDrawTime; // Last rectangle draw time
 
 // Shared state for rectangle management
-std::atomic<bool> speechOngoing(false); // Atomic boolean to track ongoing speech
 RECT currentRect; // Current rectangle being processed
 std::mutex rectMtx; // Mutex for rectangle operations
 std::condition_variable rectCv; // Condition variable for rectangle thread
 
-enum class RectangleAction { Draw, Clear }; // Enum for rectangle actions
-
+// Struct to hold rectangle tasks (draw or clear)
 struct RectangleTask {
     RECT rect; // Rectangle coordinates
-    RectangleAction action; // Rectangle action (draw or clear)
+    bool draw; // Boolean to indicate whether to draw or clear
 };
 
 ConcurrentQueue<RectangleTask> rectQueue; // Concurrent queue for rectangle tasks
@@ -145,6 +146,11 @@ std::thread worker;              // General worker thread
 std::thread rectangleWorker;     // Thread for handling rectangle drawing and clearing
 std::thread cursorChecker;       // Thread for checking cursor position
 
+// Global variables for keyboard shortcuts
+std::atomic<bool> capsLockOverride(false);
+std::chrono::time_point<std::chrono::steady_clock> lastCapsLockPress;
+std::mutex elementMutex;
+
 // Logging function to output debug messages to both debug console and log file
 void DebugLog(const std::wstring& message) {
     std::wstringstream ws;
@@ -152,6 +158,156 @@ void DebugLog(const std::wstring& message) {
     OutputDebugString(ws.str().c_str());
     std::wofstream logFile("debug.log", std::ios::app);
     logFile << ws.str();
+}
+
+// Function to toggle CAPSLOCK override state
+void ToggleCapsLockOverride() {
+    capsLockOverride.store(!capsLockOverride.load());
+    DebugLog(L"CAPSLOCK override " + std::wstring(capsLockOverride.load() ? L"enabled" : L"disabled"));
+}
+
+void ProcessNewElement(CComPtr<IUIAutomationElement> pElement); // Function declaration
+
+// Function to move to the parent element
+void MoveToParentElement() {
+    std::lock_guard<std::mutex> lock(elementMutex);
+    if (!pPrevElement) return;
+
+    CComPtr<IUIAutomationTreeWalker> pControlWalker;
+    HRESULT hr = pAutomation->get_ControlViewWalker(&pControlWalker);
+    if (SUCCEEDED(hr)) {
+        CComPtr<IUIAutomationElement> pParent;
+        hr = pControlWalker->GetParentElement(pPrevElement, &pParent);
+        if (SUCCEEDED(hr) && pParent) {
+            pPrevElement = pParent;
+            DebugLog(L"Moved to parent element");
+            ProcessNewElement(pPrevElement); // Process the new parent element
+        }
+    }
+}
+
+// Function to move to the first child element
+void MoveToFirstChildElement() {
+    std::lock_guard<std::mutex> lock(elementMutex);
+    if (!pPrevElement) return;
+
+    CComPtr<IUIAutomationTreeWalker> pControlWalker;
+    HRESULT hr = pAutomation->get_ControlViewWalker(&pControlWalker);
+    if (SUCCEEDED(hr)) {
+        CComPtr<IUIAutomationElement> pChild;
+        hr = pControlWalker->GetFirstChildElement(pPrevElement, &pChild);
+        if (SUCCEEDED(hr) && pChild) {
+            pPrevElement = pChild;
+            DebugLog(L"Moved to first child element");
+            ProcessNewElement(pPrevElement); // Process the new child element
+        }
+    }
+}
+
+// Add these functions to navigate to next sibling, previous sibling, and redo the current element
+void MoveToNextSiblingElement() {
+    std::lock_guard<std::mutex> lock(elementMutex);
+    if (!pPrevElement) return;
+
+    CComPtr<IUIAutomationTreeWalker> pControlWalker;
+    HRESULT hr = pAutomation->get_ControlViewWalker(&pControlWalker);
+    if (SUCCEEDED(hr)) {
+        CComPtr<IUIAutomationElement> pNextSibling;
+        hr = pControlWalker->GetNextSiblingElement(pPrevElement, &pNextSibling);
+        if (SUCCEEDED(hr) && pNextSibling) {
+            pPrevElement = pNextSibling;
+            DebugLog(L"Moved to next sibling element");
+            ProcessNewElement(pPrevElement); // Process the new sibling element
+        }
+    }
+}
+
+void MoveToPreviousSiblingElement() {
+    std::lock_guard<std::mutex> lock(elementMutex);
+    if (!pPrevElement) return;
+
+    CComPtr<IUIAutomationTreeWalker> pControlWalker;
+    HRESULT hr = pAutomation->get_ControlViewWalker(&pControlWalker);
+    if (SUCCEEDED(hr)) {
+        CComPtr<IUIAutomationElement> pPreviousSibling;
+        hr = pControlWalker->GetPreviousSiblingElement(pPrevElement, &pPreviousSibling);
+        if (SUCCEEDED(hr) && pPreviousSibling) {
+            pPrevElement = pPreviousSibling;
+            DebugLog(L"Moved to previous sibling element");
+            ProcessNewElement(pPrevElement); // Process the new sibling element
+        }
+    }
+}
+
+void RedoCurrentElement() {
+    std::lock_guard<std::mutex> lock(elementMutex);
+    if (pPrevElement) {
+        DebugLog(L"Redoing current element");
+        ProcessNewElement(pPrevElement); // Reprocess the current element
+    }
+}
+
+// Modify the LowLevelKeyboardProc function to handle new shortcuts
+LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
+    if (nCode == HC_ACTION) {
+        KBDLLHOOKSTRUCT* pKeyBoard = (KBDLLHOOKSTRUCT*)lParam;
+        if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
+            if (pKeyBoard->vkCode == VK_CAPITAL) {
+                auto now = std::chrono::steady_clock::now();
+                if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastCapsLockPress).count() < 500) {
+                    ToggleCapsLockOverride();
+                    DebugLog(L"Double CAPSLOCK detected, toggling override.");
+                }
+                else {
+                    DebugLog(L"Single CAPSLOCK press detected.");
+                }
+                lastCapsLockPress = now;
+            }
+
+            if (capsLockOverride.load()) {
+                switch (pKeyBoard->vkCode) {
+                case 'W':
+                    MoveToParentElement();
+                    DebugLog(L"CAPSLOCK+W: Move to parent element.");
+                    break;
+                case 'S':
+                    MoveToFirstChildElement();
+                    DebugLog(L"CAPSLOCK+S: Move to first child element.");
+                    break;
+                case 'D':
+                    MoveToNextSiblingElement();
+                    DebugLog(L"CAPSLOCK+D: Move to next sibling element.");
+                    break;
+                case 'A':
+                    MoveToPreviousSiblingElement();
+                    DebugLog(L"CAPSLOCK+A: Move to previous sibling element.");
+                    break;
+                case 'E':
+                    RedoCurrentElement();
+                    DebugLog(L"CAPSLOCK+E: Redo current element.");
+                    break;
+                }
+            }
+        }
+    }
+    return CallNextHookEx(NULL, nCode, wParam, lParam);
+}
+
+// Set the low-level keyboard hook
+void SetLowLevelKeyboardHook() {
+    HHOOK hKeyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, NULL, 0);
+    if (!hKeyboardHook) {
+        DebugLog(L"Failed to set keyboard hook.");
+        return;
+    }
+
+    MSG msg;
+    while (GetMessage(&msg, NULL, 0, 0)) {
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
+
+    UnhookWindowsHookEx(hKeyboardHook);
 }
 
 // Set the console buffer size for better visibility of console output
@@ -167,10 +323,18 @@ void SetConsoleBufferSize() {
 }
 
 // Queue a rectangle task for drawing or clearing
-void QueueRectangle(const RECT& rect, RectangleAction action) {
-    rectQueue.push({ rect, action });  // Push the task to the queue
-    rectCv.notify_one();               // Notify the rectangle worker
-    DebugLog((action == RectangleAction::Draw ? L"Queueing rectangle for drawing: (" : L"Queueing rectangle for clearing: (") +
+void QueueRectangle(const RECT& rect, bool draw) {
+    if (rect.left == rect.right || rect.top == rect.bottom) {
+        DebugLog(L"Ignoring invalid rectangle: (" + std::to_wstring(rect.left) + L", " + std::to_wstring(rect.top) + L", " + std::to_wstring(rect.right) + L", " + std::to_wstring(rect.bottom) + L")");
+        return; // Ignore invalid rectangles
+    }
+
+    std::lock_guard<std::mutex> lock(rectMtx);  // Ensure exclusive access to the queue
+    rectQueue.push({ rect, draw });
+    rectCv.notify_one();
+
+    std::wstring actionStr = draw ? L"Draw" : L"Clear";
+    DebugLog(L"Queueing rectangle for " + actionStr + L": (" +
         std::to_wstring(rect.left) + L", " +
         std::to_wstring(rect.top) + L", " +
         std::to_wstring(rect.right) + L", " +
@@ -178,37 +342,55 @@ void QueueRectangle(const RECT& rect, RectangleAction action) {
 }
 
 // Process a rectangle task (draw or clear)
-void ProcessRectangle(const RECT& rect, RectangleAction action) {
-    HDC hdc = GetDC(NULL); // Get device context
-    if (hdc) {
-        if (action == RectangleAction::Draw) {
-            // Create and select a red pen for drawing
-            HPEN hPen = CreatePen(PS_SOLID, 2, RGB(255, 0, 0));
-            HGDIOBJ hOldPen = SelectObject(hdc, hPen);
-            HBRUSH hBrush = (HBRUSH)GetStockObject(HOLLOW_BRUSH);
-            HGDIOBJ hOldBrush = SelectObject(hdc, hBrush);
+void ProcessRectangle(const RECT& rect, bool draw) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(120)); // Optional: wait before retrying
+    try {
+        DebugLog(L"Starting ProcessRectangle with action: " + std::to_wstring(draw) + L" for rectangle: (" +
+            std::to_wstring(rect.left) + L", " +
+            std::to_wstring(rect.top) + L", " +
+            std::to_wstring(rect.right) + L", " +
+            std::to_wstring(rect.bottom) + L")");
 
-            // Draw the rectangle
-            Rectangle(hdc, rect.left, rect.top, rect.right, rect.bottom);
+        HDC hdc = GetDC(NULL);
+        if (hdc) {
+            if (draw) {
+                HPEN hPen = CreatePen(PS_SOLID, 2, RGB(255, 0, 0)); // Create a red pen for drawing
+                HGDIOBJ hOldPen = SelectObject(hdc, hPen);
+                HBRUSH hBrush = (HBRUSH)GetStockObject(HOLLOW_BRUSH);
+                HGDIOBJ hOldBrush = SelectObject(hdc, hBrush);
 
-            // Restore old objects and delete the created pen
-            SelectObject(hdc, hOldPen);
-            SelectObject(hdc, hOldBrush);
-            DeleteObject(hPen);
+                Rectangle(hdc, rect.left, rect.top, rect.right, rect.bottom); // Draw the rectangle
+
+                SelectObject(hdc, hOldPen);
+                SelectObject(hdc, hOldBrush);
+                DeleteObject(hPen);
+
+                rectangleDrawn.store(true);  // Update the state
+                DebugLog(L"Rectangle drawn: (" + std::to_wstring(rect.left) + L", " +
+                    std::to_wstring(rect.top) + L", " +
+                    std::to_wstring(rect.right) + L", " +
+                    std::to_wstring(rect.bottom) + L")");
+            }
+            else {
+                InvalidateRect(NULL, &rect, TRUE); // Invalidate the rectangle area
+                rectangleDrawn.store(false);  // Update the state
+
+                DebugLog(L"Invalidated rectangle area: (" +
+                    std::to_wstring(rect.left) + L", " +
+                    std::to_wstring(rect.top) + L", " +
+                    std::to_wstring(rect.right) + L", " +
+                    std::to_wstring(rect.bottom) + L")");
+            }
+            ReleaseDC(NULL, hdc);
         }
         else {
-            // Invalidate the rectangle area to force a redraw
-            InvalidateRect(NULL, &rect, TRUE);
-            DebugLog(L"Invalidated rectangle area: (" +
-                std::to_wstring(rect.left) + L", " +
-                std::to_wstring(rect.top) + L", " +
-                std::to_wstring(rect.right) + L", " +
-                std::to_wstring(rect.bottom) + L")");
+            DebugLog(L"Failed to get device context.");
         }
-        ReleaseDC(NULL, hdc); // Release device context
+
+        DebugLog(L"Ending ProcessRectangle with action: " + std::to_wstring(draw));
     }
-    else {
-        DebugLog(L"Failed to get device context.");
+    catch (const std::exception& e) {
+        DebugLog(L"Exception in ProcessRectangle: " + Utf8ToWstring(e.what()));
     }
 }
 
@@ -216,18 +398,27 @@ void ProcessRectangle(const RECT& rect, RectangleAction action) {
 void RectangleWorker() {
     DebugLog(L"Starting RectangleWorker.");
     while (!stopRectWorker.load()) {
-        RectangleTask task;
-        if (rectQueue.try_pop(task)) {
-            DebugLog(L"Processing rectangle: (" +
-                std::to_wstring(task.rect.left) + L", " +
-                std::to_wstring(task.rect.top) + L", " +
-                std::to_wstring(task.rect.right) + L", " +
-                std::to_wstring(task.rect.bottom) + L")");
-            ProcessRectangle(task.rect, task.action);
+        try {
+            RectangleTask task;
+            if (rectQueue.try_pop(task)) {
+                std::lock_guard<std::mutex> lock(rectMtx);  // Ensure exclusive access
+                DebugLog(L"Processing rectangle: (" +
+                    std::to_wstring(task.rect.left) + L", " +
+                    std::to_wstring(task.rect.top) + L", " +
+                    std::to_wstring(task.rect.right) + L", " +
+                    std::to_wstring(task.rect.bottom) + L")");
+                ProcessRectangle(task.rect, task.draw); // Process the rectangle task
+            }
+            else {
+                std::unique_lock<std::mutex> lock(rectMtx);
+                rectCv.wait(lock, [] { return !rectQueue.empty() || stopRectWorker.load(); });
+            }
         }
-        else {
-            std::unique_lock<std::mutex> lock(rectMtx);
-            rectCv.wait(lock, [] { return !rectQueue.empty() || stopRectWorker.load(); });
+        catch (const std::system_error& e) {
+            DebugLog(L"System error in RectangleWorker: " + Utf8ToWstring(e.what()));
+        }
+        catch (const std::exception& e) {
+            DebugLog(L"Exception in RectangleWorker: " + Utf8ToWstring(e.what()));
         }
     }
     DebugLog(L"Exiting RectangleWorker.");
@@ -240,42 +431,13 @@ void PrintText(const std::wstring& text) {
     DebugLog(L"Printed text to console: " + text);
 }
 
-// Stop speech and clear the speech queue
-void StopSpeechAndClearQueue() {
-    DebugLog(L"Entering StopSpeechAndClearQueue.");
-    std::scoped_lock lock(pVoiceMtx, speechMtx); // Lock both mutexes at once to avoid deadlock
-
-    // Stop ongoing speech
-    if (pVoice) {
-        HRESULT hr = pVoice->Speak(nullptr, SPF_PURGEBEFORESPEAK, nullptr);
-        if (FAILED(hr)) {
-            DebugLog(L"Failed to stop speech: " + std::to_wstring(hr));
-        }
-        else {
-            DebugLog(L"Successfully stopped speech.");
-        }
-    }
-
-    // Clear the speech queue
-    TextRect temp;
-    while (speechQueue.try_pop(temp)) {
-        // Nothing to do here, just clearing the queue
-    }
-
-    // Wait until the speaking flag is false
-    std::unique_lock<std::mutex> ul(speechMtx);
-    speakingCv.wait(ul, [] { return !speaking.load(); });
-
-    DebugLog(L"Exiting StopSpeechAndClearQueue.");
-}
-
 // Stop all current processes
 void StopCurrentProcesses() {
     DebugLog(L"Entering StopCurrentProcesses.");
     try {
         // Stop ongoing speech
         {
-            std::scoped_lock lock(pVoiceMtx, speechMtx); // Lock both mutexes at once to avoid deadlock
+            std::scoped_lock lock(pVoiceMtx, speechMtx);
             if (pVoice) {
                 HRESULT hr = pVoice->Speak(nullptr, SPF_PURGEBEFORESPEAK, nullptr);
                 if (FAILED(hr)) {
@@ -307,7 +469,7 @@ void StopCurrentProcesses() {
                 std::to_wstring(tempRect.right) + L", " +
                 std::to_wstring(tempRect.bottom) + L")");
         }
-        QueueRectangle(tempRect, RectangleAction::Clear);
+        QueueRectangle(tempRect, false);
     }
     catch (const std::system_error& e) {
         DebugLog(L"Exception in StopCurrentProcesses: " + Utf8ToWstring(e.what()));
@@ -317,6 +479,7 @@ void StopCurrentProcesses() {
     }
     DebugLog(L"Exiting StopCurrentProcesses.");
 }
+
 
 // Speech thread function
 void SpeakText() {
@@ -344,7 +507,7 @@ void SpeakText() {
             DebugLog(L"Attempting to speak text: " + textToSpeak);
             speaking.store(true); // Set speaking flag to true
 
-            {
+            try {
                 std::lock_guard<std::mutex> lock(pVoiceMtx);
                 if (pVoice) {
                     HRESULT hr = pVoice->Speak(nullptr, SPF_PURGEBEFORESPEAK, nullptr); // Stop any ongoing speech
@@ -362,12 +525,17 @@ void SpeakText() {
                     }
                 }
             }
+            catch (const std::exception& e) {
+                DebugLog(L"Exception while speaking text: " + Utf8ToWstring(e.what()));
+                speaking.store(false);
+                continue;
+            }
 
             {
                 std::lock_guard<std::mutex> rectLock(rectMtx);
                 currentRect = textRect; // Set the current rectangle
             }
-            QueueRectangle(currentRect, RectangleAction::Draw); // Queue rectangle drawing
+            QueueRectangle(currentRect, true); // Queue rectangle drawing
 
             SPVOICESTATUS status;
             while (speaking.load()) {
@@ -387,13 +555,16 @@ void SpeakText() {
                     }
                 }
 
-                std::this_thread::sleep_for(std::chrono::milliseconds(100)); // Sleep for a while before checking status again
+                std::this_thread::sleep_for(std::chrono::milliseconds(1)); // Sleep for a while before checking status again
             }
 
-            QueueRectangle(currentRect, RectangleAction::Clear); // Queue rectangle clearing
+            QueueRectangle(currentRect, false); // Queue rectangle clearing
 
+            DebugLog(L"Set speaking flag to false.");
             speaking.store(false); // Set speaking flag to false
             speakingCv.notify_all(); // Notify that speaking has finished
+            DebugLog(L"Notified all waiting on speaking condition variable.");
+
             DebugLog(L"Finished processing text: " + textToSpeak);
         }
     }
@@ -424,9 +595,7 @@ void StopSpeechThread() {
 
 // Check if the UI element is different from the previous one
 bool IsDifferentElement(CComPtr<IUIAutomationElement> pElement) {
-    DebugLog(L"Attempting to lock mtx in IsDifferentElement.");
     std::lock_guard<std::mutex> lock(mtx); // Lock mutex for thread safety
-    DebugLog(L"Locked mtx in IsDifferentElement.");
     if (pPrevElement == NULL && pElement == NULL) {
         return false;
     }
@@ -436,7 +605,6 @@ bool IsDifferentElement(CComPtr<IUIAutomationElement> pElement) {
 
     BOOL areSame;
     HRESULT hr = pAutomation->CompareElements(pPrevElement, pElement, &areSame); // Compare current and previous elements
-    DebugLog(L"Compared elements in IsDifferentElement.");
     return SUCCEEDED(hr) && !areSame; // Return true if elements are different
 }
 
@@ -556,8 +724,6 @@ void ReadElementText(CComPtr<IUIAutomationElement> pElement, ConcurrentQueue<Tex
     }
 }
 
-
-
 // Collect UI elements using depth-first search
 void CollectElementsDFS(CComPtr<IUIAutomationElement> pElement, std::vector<CComPtr<IUIAutomationElement>>& elements, int maxDepth, int maxChildren, int maxElements) {
     if (!pElement) return; // Exit if the element is null
@@ -606,6 +772,7 @@ void CollectElementsDFS(CComPtr<IUIAutomationElement> pElement, std::vector<CCom
                     DebugLog(L"Failed to get next sibling element: " + std::to_wstring(hr));
                     break;
                 }
+                throw std::runtime_error("error");
 
                 pChild = pNextSibling;
                 childCount++; // Increment the child count
@@ -614,6 +781,70 @@ void CollectElementsDFS(CComPtr<IUIAutomationElement> pElement, std::vector<CCom
     }
 }
 
+// Process cursor position and detect UI elements
+void ProcessNewElement(CComPtr<IUIAutomationElement> pElement) {
+    StopCurrentProcesses();  // Ensure all current processes are stopped
+
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (pPrevElement && rectangleDrawn) {
+            QueueRectangle(prevRect, false); // Clear previous rectangle
+        }
+
+        HRESULT hr = pElement->get_CurrentBoundingRectangle(&prevRect); // Get bounding rectangle of new element
+        if (SUCCEEDED(hr)) {
+            QueueRectangle(prevRect, true); // Draw new rectangle
+        }
+
+        pPrevElement.Release();
+        pPrevElement = pElement; // Update previous element
+    }
+
+    std::vector<CComPtr<IUIAutomationElement>> elements;
+    CollectElementsDFS(pElement, elements, MAX_DEPTH, MAX_CHILDREN, MAX_ELEMENTS); // Collect child elements
+
+    ConcurrentQueue<TextRect> textRectQueue;
+    size_t currentTextLength = 0;
+    std::unordered_set<std::wstring> processedTexts;
+
+    for (auto& element : elements) {
+        ReadElementText(element, textRectQueue, currentTextLength, processedTexts); // Read text from collected elements
+    }
+
+    if (textRectQueue.empty()) {
+        DebugLog(L"textRectQueue is empty after processing elements.");
+    }
+    else {
+        DebugLog(L"textRectQueue populated with elements.");
+    }
+
+    if (newElementDetected.load()) return; // Exit if a new element is detected during processing
+
+    std::wstring combinedText;
+
+    {
+        std::lock_guard<std::mutex> lock(speechMtx);
+        newElementDetected.store(true);
+
+        TextRect temp;
+        while (speechQueue.try_pop(temp)) {} // Clear speech queue
+
+        while (textRectQueue.try_pop(temp)) {
+            if (!combinedText.empty()) {
+                combinedText += L" ";
+            }
+            combinedText += temp.text; // Combine text from textRectQueue
+            speechQueue.push(temp); // Transfer textRect to speechQueue
+        }
+    }
+
+    if (!combinedText.empty()) {
+        PrintText(combinedText); // Print combined text to console
+    }
+
+    speechCv.notify_all(); // Notify speech thread
+    DebugLog(L"Notified speech thread.");
+}
 
 // Process cursor position and detect UI elements
 void ProcessCursorPosition(POINT point) {
@@ -629,8 +860,7 @@ void ProcessCursorPosition(POINT point) {
         }
         DebugLog(L"New element detected.");
 
-        // Consider reducing or removing this sleep
-        std::this_thread::sleep_for(std::chrono::milliseconds(10)); // Sleep briefly to stabilize detection (reduced to 10 ms)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1)); // Sleep briefly to stabilize detection
         {
             std::lock_guard<std::mutex> lock(mtx);
             newElementDetected.store(false); // Reset the flag after sleep
@@ -638,82 +868,13 @@ void ProcessCursorPosition(POINT point) {
         DebugLog(L"newElementDetected flag set to false after sleep.");
 
         if (IsDifferentElement(pElement)) {
-            StopCurrentProcesses();  // Ensure all current processes are stopped
-
-            {
-                DebugLog(L"Attempting to lock mtx in ProcessCursorPosition.");
-                std::lock_guard<std::mutex> lock(mtx);
-                DebugLog(L"Locked mtx in ProcessCursorPosition.");
-                if (pPrevElement && rectangleDrawn) {
-                    QueueRectangle(prevRect, RectangleAction::Clear); // Clear previous rectangle
-                }
-
-                hr = pElement->get_CurrentBoundingRectangle(&prevRect); // Get bounding rectangle of new element
-                if (SUCCEEDED(hr)) {
-                    QueueRectangle(prevRect, RectangleAction::Draw); // Draw new rectangle
-                }
-
-                pPrevElement.Release();
-                pPrevElement = pElement; // Update previous element
-            }
-
-            std::vector<CComPtr<IUIAutomationElement>> elements;
-            CollectElementsDFS(pElement, elements, MAX_DEPTH, MAX_CHILDREN, MAX_ELEMENTS); // Collect child elements
-
-            ConcurrentQueue<TextRect> textRectQueue;
-            size_t currentTextLength = 0;
-            std::unordered_set<std::wstring> processedTexts;
-
-            for (auto& element : elements) {
-                ReadElementText(element, textRectQueue, currentTextLength, processedTexts); // Read text from collected elements
-            }
-
-            if (textRectQueue.empty()) {
-                DebugLog(L"textRectQueue is empty after processing elements.");
-            }
-            else {
-                DebugLog(L"textRectQueue populated with elements.");
-            }
-
-            if (newElementDetected.load()) return; // Exit if a new element is detected during processing
-
-            std::wstring combinedText;
-
-            {
-                DebugLog(L"Attempting to lock speechMtx in WorkerThread.");
-                std::lock_guard<std::mutex> lock(speechMtx);
-                DebugLog(L"Locked speechMtx in WorkerThread.");
-                newElementDetected.store(true);
-
-                DebugLog(L"Speech queue size before clearing in WorkerThread: ");
-                TextRect temp;
-                while (speechQueue.try_pop(temp)) {} // Clear speech queue
-                DebugLog(L"Cleared speech queue in WorkerThread.");
-
-                while (textRectQueue.try_pop(temp)) {
-                    if (!combinedText.empty()) {
-                        combinedText += L" ";
-                    }
-                    combinedText += temp.text; // Combine text from textRectQueue
-                    speechQueue.push(temp); // Transfer textRect to speechQueue
-                }
-
-                DebugLog(L"Speech queue size after transfer: ");
-            }
-
-            if (!combinedText.empty()) {
-                PrintText(combinedText); // Print combined text to console
-            }
-
-            speechCv.notify_all(); // Notify speech thread
-            DebugLog(L"Notified speech thread.");
+            ProcessNewElement(pElement); // Process the new UI element
         }
     }
     else {
         DebugLog(L"Failed to retrieve UI element from point: " + std::to_wstring(hr));
     }
 }
-
 
 // Worker thread function to process cursor movements
 void WorkerThread() {
@@ -822,7 +983,7 @@ int main() {
         }
 
         pVoice->SetVolume(100); // Set voice volume
-        pVoice->SetRate(0); // Set voice rate
+        pVoice->SetRate(2); // Set voice rate
     }
 
     hMouseHook = SetWindowsHookEx(WH_MOUSE_LL, MouseProc, NULL, 0); // Set mouse hook
@@ -836,6 +997,10 @@ int main() {
     cursorChecker = std::thread(CheckCursorMovement); // Start cursor checker thread
     rectangleWorker = std::thread(RectangleWorker); // Start rectangle worker thread
     StartSpeechThread(); // Start speech thread
+
+    // Start the keyboard hook in a separate thread
+    std::thread keyboardHookThread(SetLowLevelKeyboardHook);
+    keyboardHookThread.detach();
 
     MSG msg;
     while (GetMessage(&msg, NULL, 0, 0)) { // Message loop
@@ -854,4 +1019,3 @@ int main() {
 
     return 0;
 }
-
