@@ -90,7 +90,7 @@ struct TextRect {
     RECT rect;
 };
 
-// Global variables
+// Global variables for UI Automation and speech synthesis
 HHOOK hMouseHook; // Mouse hook handle
 CComPtr<IUIAutomation> pAutomation = NULL; // UI Automation pointer
 CComPtr<IUIAutomationElement> pPrevElement = NULL; // Previous UI element pointer
@@ -98,7 +98,7 @@ RECT prevRect = { 0, 0, 0, 0 }; // Previous rectangle
 std::chrono::time_point<std::chrono::steady_clock> lastProcessedTime; // Last processed time
 std::mutex mtx; // General mutex for synchronizing access
 
-ConcurrentQueue<POINT> pointsQueue; // Concurrent queue for storing cursor points
+std::atomic<POINT> currentCursorPosition; // Current cursor position
 std::atomic<bool> stopWorker(false); // Atomic boolean to signal worker thread to stop
 
 CComPtr<ISpVoice> pVoice = NULL; // Speech voice pointer
@@ -106,8 +106,6 @@ std::mutex pVoiceMtx; // Mutex for pVoice
 
 std::atomic<bool> cursorMoving(false); // Atomic boolean to track cursor movement
 std::chrono::time_point<std::chrono::steady_clock> lastCursorMoveTime; // Last cursor move time
-
-std::atomic<bool> stopProcessing(false); // Atomic boolean to signal processing to stop
 
 std::mutex speechMtx; // Mutex for speech queue
 std::condition_variable speechCv; // Condition variable for speech thread
@@ -343,7 +341,7 @@ void QueueRectangle(const RECT& rect, bool draw) {
 
 // Process a rectangle task (draw or clear)
 void ProcessRectangle(const RECT& rect, bool draw) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(120)); // Optional: wait before retrying
+    std::this_thread::sleep_for(std::chrono::milliseconds(125)); // Optional: wait before retrying
     try {
         DebugLog(L"Starting ProcessRectangle with action: " + std::to_wstring(draw) + L" for rectangle: (" +
             std::to_wstring(rect.left) + L", " +
@@ -651,7 +649,7 @@ void ReinitializeAutomation() {
 
 // Read text from a UI element
 void ReadElementText(CComPtr<IUIAutomationElement> pElement, ConcurrentQueue<TextRect>& textRectQueue, size_t& currentTextLength, std::unordered_set<std::wstring>& processedTexts) {
-    if (stopProcessing.load()) return; // Exit if processing is stopped
+    if (newElementDetected.load()) return; // Exit if processing is stopped
 
     try {
         CComPtr<IUIAutomationTextPattern> pTextPattern = NULL;
@@ -726,7 +724,7 @@ void ReadElementText(CComPtr<IUIAutomationElement> pElement, ConcurrentQueue<Tex
 
 // Collect UI elements using depth-first search
 void CollectElementsDFS(CComPtr<IUIAutomationElement> pElement, std::vector<CComPtr<IUIAutomationElement>>& elements, int maxDepth, int maxChildren, int maxElements) {
-    if (!pElement) return; // Exit if the element is null
+    if (!pElement || newElementDetected.load()) return; // Exit if the element is null or processing is stopped
 
     struct ElementInfo {
         CComPtr<IUIAutomationElement> element;
@@ -737,7 +735,8 @@ void CollectElementsDFS(CComPtr<IUIAutomationElement> pElement, std::vector<CCom
     elementQueue.push({ pElement, 0 }); // Push the initial element with depth 0
 
     while (!elementQueue.empty() && elements.size() < maxElements) {
-        if (stopProcessing.load()) return; // Exit if processing is stopped
+
+        if (newElementDetected.load()) return; // Exit if processing is stopped
 
         ElementInfo current;
         if (elementQueue.try_pop(current)) {
@@ -764,6 +763,9 @@ void CollectElementsDFS(CComPtr<IUIAutomationElement> pElement, std::vector<CCom
 
             int childCount = 0;
             while (SUCCEEDED(hr) && pChild && childCount < maxChildren) {
+
+                if (newElementDetected.load()) return; // Exit if processing is stopped
+
                 elementQueue.push({ pChild, current.depth + 1 }); // Push the child element with incremented depth
 
                 CComPtr<IUIAutomationElement> pNextSibling;
@@ -772,7 +774,6 @@ void CollectElementsDFS(CComPtr<IUIAutomationElement> pElement, std::vector<CCom
                     DebugLog(L"Failed to get next sibling element: " + std::to_wstring(hr));
                     break;
                 }
-                throw std::runtime_error("error");
 
                 pChild = pNextSibling;
                 childCount++; // Increment the child count
@@ -809,6 +810,7 @@ void ProcessNewElement(CComPtr<IUIAutomationElement> pElement) {
 
     for (auto& element : elements) {
         ReadElementText(element, textRectQueue, currentTextLength, processedTexts); // Read text from collected elements
+        if (newElementDetected.load()) return; // Exit if a new element is detected during processing
     }
 
     if (textRectQueue.empty()) {
@@ -854,20 +856,21 @@ void ProcessCursorPosition(POINT point) {
     HRESULT hr = pAutomation->ElementFromPoint(point, &pElement); // Get the UI element from the cursor position
 
     if (SUCCEEDED(hr) && pElement) {
-        {
-            std::lock_guard<std::mutex> lock(mtx);
-            newElementDetected.store(true); // Indicate a new element is detected
-        }
-        DebugLog(L"New element detected.");
-
-        std::this_thread::sleep_for(std::chrono::milliseconds(1)); // Sleep briefly to stabilize detection
-        {
-            std::lock_guard<std::mutex> lock(mtx);
-            newElementDetected.store(false); // Reset the flag after sleep
-        }
-        DebugLog(L"newElementDetected flag set to false after sleep.");
-
+        
         if (IsDifferentElement(pElement)) {
+            {
+                std::lock_guard<std::mutex> lock(mtx);
+                newElementDetected.store(true); // Indicate a new element is detected
+            }
+            DebugLog(L"New element detected.");
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(25)); // Sleep briefly to stabilize detection
+            {
+                std::lock_guard<std::mutex> lock(mtx);
+                newElementDetected.store(false); // Reset the flag after sleep
+            }
+            DebugLog(L"newElementDetected flag set to false after sleep.");
+
             ProcessNewElement(pElement); // Process the new UI element
         }
     }
@@ -878,41 +881,29 @@ void ProcessCursorPosition(POINT point) {
 
 // Worker thread function to process cursor movements
 void WorkerThread() {
+    POINT lastProcessedPoint = { -1, -1 }; // Initialize to an invalid point
     while (!stopWorker.load()) {
-        POINT point;
-        if (pointsQueue.try_pop(point)) {
-            ProcessCursorPosition(point); // Process the cursor position if available
+        POINT currentPoint = currentCursorPosition.load(); // Get the latest cursor position
+        if (currentPoint.x != lastProcessedPoint.x || currentPoint.y != lastProcessedPoint.y) {
+            ProcessCursorPosition(currentPoint); // Process the cursor position if it has changed
+            lastProcessedPoint = currentPoint; // Update the last processed point
         }
-        else {
-            std::this_thread::sleep_for(std::chrono::milliseconds(100)); // Sleep if no cursor position to process
-        }
-    }
-}
-
-// Thread function to check cursor movement
-void CheckCursorMovement() {
-    while (!stopWorker.load()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(50)); // Sleep briefly before checking cursor movement
-
-        auto now = std::chrono::steady_clock::now();
-        if (cursorMoving.load() && std::chrono::duration_cast<std::chrono::milliseconds>(now - lastCursorMoveTime).count() > 150) {
-            POINT point;
-            GetCursorPos(&point); // Get current cursor position
-
-            pointsQueue.push(point); // Push cursor position to the queue
-            cursorMoving.store(false); // Reset cursor moving flag
-            DebugLog(L"Detected cursor movement to: (" + std::to_wstring(point.x) + L", " + std::to_wstring(point.y) + L")");
-        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50)); // Sleep to balance responsiveness and CPU usage
     }
 }
 
 // Mouse hook procedure to detect mouse movements
 LRESULT CALLBACK MouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
     if (nCode >= 0 && wParam == WM_MOUSEMOVE) {
-        cursorMoving.store(true); // Set cursor moving flag to true
-        lastCursorMoveTime = std::chrono::steady_clock::now(); // Update the last cursor move time
+        POINT point;
+        GetCursorPos(&point);
+
+        currentCursorPosition.store(point); // Update the current cursor position
+
+        // Log the cursor movement
+        DebugLog(L"Mouse moved to: (" + std::to_wstring(point.x) + L", " + std::to_wstring(point.y) + L")");
     }
-    return CallNextHookEx(hMouseHook, nCode, wParam, lParam); // Call the next hook in the chain
+    return CallNextHookEx(hMouseHook, nCode, wParam, lParam);
 }
 
 // Shutdown function to clean up resources
@@ -994,7 +985,6 @@ int main() {
     }
 
     worker = std::thread(WorkerThread); // Start worker thread
-    cursorChecker = std::thread(CheckCursorMovement); // Start cursor checker thread
     rectangleWorker = std::thread(RectangleWorker); // Start rectangle worker thread
     StartSpeechThread(); // Start speech thread
 
