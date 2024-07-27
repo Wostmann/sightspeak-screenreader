@@ -432,7 +432,10 @@ void PrintText(const std::wstring& text) {
 // Stop all current processes
 void StopCurrentProcesses() {
     DebugLog(L"Entering StopCurrentProcesses.");
+
     try {
+        newElementDetected.store(true); // Set the stop flag
+
         // Stop ongoing speech
         {
             std::scoped_lock lock(pVoiceMtx, speechMtx);
@@ -468,6 +471,14 @@ void StopCurrentProcesses() {
                 std::to_wstring(tempRect.bottom) + L")");
         }
         QueueRectangle(tempRect, false);
+
+        // Clear the rect queue
+        RectangleTask rectTask;
+        while (rectQueue.try_pop(rectTask)) {}
+
+        newElementDetected.store(false); // Reset the stop flag
+
+        DebugLog(L"Exiting StopCurrentProcesses.");
     }
     catch (const std::system_error& e) {
         DebugLog(L"Exception in StopCurrentProcesses: " + Utf8ToWstring(e.what()));
@@ -475,6 +486,7 @@ void StopCurrentProcesses() {
     catch (const std::exception& e) {
         DebugLog(L"Exception in StopCurrentProcesses: " + Utf8ToWstring(e.what()));
     }
+
     DebugLog(L"Exiting StopCurrentProcesses.");
 }
 
@@ -735,11 +747,11 @@ void CollectElementsDFS(CComPtr<IUIAutomationElement> pElement, std::vector<CCom
     elementQueue.push({ pElement, 0 }); // Push the initial element with depth 0
 
     while (!elementQueue.empty() && elements.size() < maxElements) {
-
         if (newElementDetected.load()) return; // Exit if processing is stopped
 
         ElementInfo current;
         if (elementQueue.try_pop(current)) {
+            if (newElementDetected.load()) return; // Exit if processing is stopped
             if (current.depth >= maxDepth) continue; // Skip if max depth is reached
 
             if (current.element) {
@@ -763,7 +775,6 @@ void CollectElementsDFS(CComPtr<IUIAutomationElement> pElement, std::vector<CCom
 
             int childCount = 0;
             while (SUCCEEDED(hr) && pChild && childCount < maxChildren) {
-
                 if (newElementDetected.load()) return; // Exit if processing is stopped
 
                 elementQueue.push({ pChild, current.depth + 1 }); // Push the child element with incremented depth
@@ -801,6 +812,8 @@ void ProcessNewElement(CComPtr<IUIAutomationElement> pElement) {
         pPrevElement = pElement; // Update previous element
     }
 
+    if (newElementDetected.load()) return; // Exit if a new element is detected
+
     std::vector<CComPtr<IUIAutomationElement>> elements;
     CollectElementsDFS(pElement, elements, MAX_DEPTH, MAX_CHILDREN, MAX_ELEMENTS); // Collect child elements
 
@@ -809,9 +822,11 @@ void ProcessNewElement(CComPtr<IUIAutomationElement> pElement) {
     std::unordered_set<std::wstring> processedTexts;
 
     for (auto& element : elements) {
+        if (newElementDetected.load()) return; // Exit if a new element is detected
         ReadElementText(element, textRectQueue, currentTextLength, processedTexts); // Read text from collected elements
-        if (newElementDetected.load()) return; // Exit if a new element is detected during processing
     }
+
+    if (newElementDetected.load()) return; // Exit if a new element is detected
 
     if (textRectQueue.empty()) {
         DebugLog(L"textRectQueue is empty after processing elements.");
@@ -820,18 +835,16 @@ void ProcessNewElement(CComPtr<IUIAutomationElement> pElement) {
         DebugLog(L"textRectQueue populated with elements.");
     }
 
-    if (newElementDetected.load()) return; // Exit if a new element is detected during processing
-
     std::wstring combinedText;
 
     {
         std::lock_guard<std::mutex> lock(speechMtx);
-        newElementDetected.store(true);
 
         TextRect temp;
         while (speechQueue.try_pop(temp)) {} // Clear speech queue
 
         while (textRectQueue.try_pop(temp)) {
+            if (newElementDetected.load()) return; // Exit if a new element is detected
             if (!combinedText.empty()) {
                 combinedText += L" ";
             }
@@ -848,6 +861,7 @@ void ProcessNewElement(CComPtr<IUIAutomationElement> pElement) {
     DebugLog(L"Notified speech thread.");
 }
 
+
 // Process cursor position and detect UI elements
 void ProcessCursorPosition(POINT point) {
     DebugLog(L"Processing cursor position: (" + std::to_wstring(point.x) + L", " + std::to_wstring(point.y) + L")");
@@ -858,19 +872,8 @@ void ProcessCursorPosition(POINT point) {
     if (SUCCEEDED(hr) && pElement) {
         
         if (IsDifferentElement(pElement)) {
-            {
-                std::lock_guard<std::mutex> lock(mtx);
-                newElementDetected.store(true); // Indicate a new element is detected
-            }
             DebugLog(L"New element detected.");
-
-            std::this_thread::sleep_for(std::chrono::milliseconds(25)); // Sleep briefly to stabilize detection
-            {
-                std::lock_guard<std::mutex> lock(mtx);
-                newElementDetected.store(false); // Reset the flag after sleep
-            }
-            DebugLog(L"newElementDetected flag set to false after sleep.");
-
+            StopCurrentProcesses(); // Stop all ongoing processes immediately
             ProcessNewElement(pElement); // Process the new UI element
         }
     }
@@ -953,14 +956,14 @@ int main() {
     HRESULT hr = CoInitialize(NULL); // Initialize COM library
     if (FAILED(hr)) {
         DebugLog(L"Failed to initialize COM library: " + std::to_wstring(hr));
-        return 1;
+        return 2;
     }
 
     hr = CoCreateInstance(__uuidof(CUIAutomation), NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pAutomation)); // Create UI Automation instance
     if (FAILED(hr)) {
         DebugLog(L"Failed to create UI Automation instance: " + std::to_wstring(hr));
         CoUninitialize();
-        return 1;
+        return 3;
     }
 
     {
@@ -970,7 +973,7 @@ int main() {
             DebugLog(L"Failed to initialize SAPI: " + std::to_wstring(hr));
             pAutomation.Release();
             CoUninitialize();
-            return 1;
+            return 4;
         }
 
         pVoice->SetVolume(100); // Set voice volume
@@ -981,7 +984,7 @@ int main() {
     if (!hMouseHook) {
         DebugLog(L"Failed to set mouse hook.");
         Shutdown(); // Shutdown if mouse hook fails
-        return 1;
+        return 5;
     }
 
     worker = std::thread(WorkerThread); // Start worker thread
