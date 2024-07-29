@@ -455,10 +455,9 @@ void StopCurrentProcesses() {
         while (speechQueue.try_pop(temp)) {}
 
         // Ensure speaking flag is false
-        {
-            std::unique_lock<std::mutex> ul(speechMtx);
-            speakingCv.wait(ul, [] { return !speaking.load(); });
-        }
+        speaking.store(false);
+        speakingCv.notify_all();
+
 
         // Clear the current rectangle
         RECT tempRect;
@@ -477,8 +476,6 @@ void StopCurrentProcesses() {
         while (rectQueue.try_pop(rectTask)) {}
 
         newElementDetected.store(false); // Reset the stop flag
-
-        DebugLog(L"Exiting StopCurrentProcesses.");
     }
     catch (const std::system_error& e) {
         DebugLog(L"Exception in StopCurrentProcesses: " + Utf8ToWstring(e.what()));
@@ -667,7 +664,8 @@ void ReadElementText(CComPtr<IUIAutomationElement> pElement, ConcurrentQueue<Tex
         CComPtr<IUIAutomationTextPattern> pTextPattern = NULL;
         HRESULT hr = pElement->GetCurrentPatternAs(UIA_TextPatternId, IID_PPV_ARGS(&pTextPattern)); // Get TextPattern from element
         if (SUCCEEDED(hr) && pTextPattern) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(100)); // Delay to ensure the text is ready for extraction
+            if (newElementDetected.load()) return; // Exit if processing is stopped
+            std::this_thread::sleep_for(std::chrono::milliseconds(10)); // Delay to ensure the text is ready for extraction
 
             CComPtr<IUIAutomationTextRange> pTextRange = NULL;
             hr = pTextPattern->get_DocumentRange(&pTextRange); // Get document range from TextPattern
@@ -891,7 +889,7 @@ void WorkerThread() {
             ProcessCursorPosition(currentPoint); // Process the cursor position if it has changed
             lastProcessedPoint = currentPoint; // Update the last processed point
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(50)); // Sleep to balance responsiveness and CPU usage
+        std::this_thread::sleep_for(std::chrono::milliseconds(10)); // Sleep to balance responsiveness and CPU usage
     }
 }
 
