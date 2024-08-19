@@ -267,11 +267,6 @@ void ProcessRectangle(const RECT& rect, bool draw, std::shared_future<void> canc
 
     auto start = std::chrono::steady_clock::now();
 
-    // Delay handling is managed outside the critical section to avoid locking overhead
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-    //std::lock_guard<std::mutex> lock(rectMtx);
-
     try {
         DebugLog(L"ProcessRectangle with action: " + std::to_wstring(draw) + L" for rectangle: (" +
             std::to_wstring(rect.left) + L", " +
@@ -281,6 +276,9 @@ void ProcessRectangle(const RECT& rect, bool draw, std::shared_future<void> canc
         HDC hdc = GetDC(NULL);
         if (hdc) {
             if (draw) {
+                
+                // Delay handling is managed outside the critical section to avoid locking overhead
+                std::this_thread::sleep_for(std::chrono::milliseconds(30));
                 HPEN hPen = CreatePen(PS_SOLID, 2, GetSysColor(COLOR_HIGHLIGHT)); // System color that adapts to current theme;
                 HGDIOBJ hOldPen = SelectObject(hdc, hPen);
                 HBRUSH hBrush = (HBRUSH)GetStockObject(HOLLOW_BRUSH);
@@ -436,8 +434,9 @@ public:
             textRectQueue.pop();
         }
         DebugLog(L"Dequeued " + textRect.text);
-        // Process the rectangle first
-        ProcessRectangle(textRect.rect, true, cancelFuture);
+        // Process the rectangle drawing first
+        std::async(std::launch::async, ProcessRectangle, textRect.rect, true, cancelFuture);
+        
 
         // Handle the text and rectangle in a non-blocking way
         std::future<void> future = SpeakTextTask(textRect.text, cancelFuture);
@@ -689,12 +688,12 @@ LRESULT CALLBACK MouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
     if (nCode >= 0 && wParam == WM_MOUSEMOVE) {
         POINT point;
         GetCursorPos(&point);
-
-        auto now = std::chrono::steady_clock::now();
-        if (now - lastProcessed.load() > std::chrono::milliseconds(50)) {
-            lastProcessed.store(now);
-            ProcessCursorPosition(point);  // Directly call ProcessCursorPosition instead of async
-        }
+        ProcessCursorPosition(point);
+        //auto now = std::chrono::steady_clock::now();
+        //if (now - lastProcessed.load() > std::chrono::milliseconds(1)) {
+        //    lastProcessed.store(now);
+        //    ProcessCursorPosition(point);  // Directly call ProcessCursorPosition instead of async
+        //}
     }
     return CallNextHookEx(hMouseHook, nCode, wParam, lParam);
 }
