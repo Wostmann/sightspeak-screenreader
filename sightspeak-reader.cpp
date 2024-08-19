@@ -20,8 +20,6 @@
 #include <fstream>
 #include <queue>
 #include <functional>
-#include <tbb/tbb.h>
-#include <tbb/concurrent_queue.h>
 #include <shared_mutex>
 #include <future>
 #include <boost/asio.hpp>

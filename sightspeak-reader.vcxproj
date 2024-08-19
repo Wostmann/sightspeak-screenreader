@@ -47,7 +47,7 @@
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
-    <UseDebugLibraries>false</UseDebugLibraries>
+    <UseDebugLibraries>true</UseDebugLibraries>
     <PlatformToolset>v143</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
@@ -71,8 +71,12 @@
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <IncludePath>$(VC_IncludePath);$(WindowsSDK_IncludePath); C:\vcpkg\installed\x64-windows\include; C:\libs\boost\boost_1_85_0</IncludePath>
-    <LibraryPath>$(VC_LibraryPath_x64);$(WindowsSDK_LibraryPath_x64); C:\vcpkg\installed\x64-windows\lib;C:\libs\boost\boost_1_85_0\stage\lib</LibraryPath>
+    <IncludePath>$(VC_IncludePath);$(WindowsSDK_IncludePath); C:\libs\boost\boost_1_85_0</IncludePath>
+    <LibraryPath>$(VC_LibraryPath_x64);$(WindowsSDK_LibraryPath_x64);C:\libs\boost\boost_1_85_0\stage\lib</LibraryPath>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <IncludePath>$(VC_IncludePath);$(WindowsSDK_IncludePath);C:\libs\boost\boost_1_85_0</IncludePath>
+    <LibraryPath>$(VC_LibraryPath_x64);$(WindowsSDK_LibraryPath_x64);C:\libs\boost\boost_1_85_0\stage\lib</LibraryPath>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
@@ -109,13 +113,13 @@
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions);NOMINMAX;WIN32_LEAN_AND_MEAN;BOOST_ASIO_DISABLE_STD_CALL;_WIN32_WINNT=0x0601</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(VCPKG_ROOT)\installed\x64-windows\include;C:\vcpkg\installed\x64-windows\include;C:\libs\boost\boost_1_85_0</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\libs\boost\boost_1_85_0</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>$(CoreLibraryDependencies);%(AdditionalDependencies);user32.lib;gdi32.lib;uiautomationcore.lib;sapi.lib;tbb12.lib;tbbmalloc.lib;libboost_system-vc143-mt-gd-x64-1_85.lib</AdditionalDependencies>
-      <AdditionalLibraryDirectories>C:\vcpkg\installed\x64-windows\lib; C:\libs\boost\boost_1_85_0\stage\lib</AdditionalLibraryDirectories>
+      <AdditionalDependencies>$(CoreLibraryDependencies);%(AdditionalDependencies);user32.lib;gdi32.lib;uiautomationcore.lib;sapi.lib;libboost_system-vc143-mt-gd-x64-1_85.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>C:\libs\boost\boost_1_85_0\stage\lib</AdditionalLibraryDirectories>
     </Link>
     <PostBuildEvent>
       <Command>copy "C:\vcpkg\installed\x64-windows\bin\tbb12.dll" "$(OutDir)"
@@ -129,14 +133,19 @@ copy "C:\vcpkg\installed\x64-windows\bin\tbbmalloc.dll" "$(OutDir)"
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions);NOMINMAX;WIN32_LEAN_AND_MEAN;BOOST_ASIO_DISABLE_STD_CALL;_WIN32_WINNT=0x0601</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalIncludeDirectories>C:\libs\boost\boost_1_85_0</AdditionalIncludeDirectories>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>C:\libs\boost\boost_1_85_0\stage\lib</AdditionalLibraryDirectories>
+      <AdditionalDependencies>$(CoreLibraryDependencies);%(AdditionalDependencies);user32.lib;gdi32.lib;uiautomationcore.lib;sapi.lib;libboost_system-vc143-mt-gd-x64-1_85.lib</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
