@@ -22,9 +22,9 @@
 #include <functional>
 #include <shared_mutex>
 #include <future>
-#include <boost/asio.hpp>
-#include <boost/thread/thread.hpp>
-#include <boost/asio/steady_timer.hpp>
+#include "external/BS_thread_pool.hpp"
+#include "external/BS_thread_pool_utils.hpp"
+
 
 // Utility function to convert UTF-8 string to wide string
 // Used when converting text from multi-byte to wide-character encoding, common in Windows APIs
@@ -73,7 +73,9 @@ std::atomic<bool> capsLockOverride(false); // Atomic flag for CAPSLOCK override
 std::atomic<bool> capsLockFirstPress{ false }; // Atomic flag for first CAPSLOCK press detection
 std::chrono::time_point<std::chrono::steady_clock> lastCapsLockPress; // Timestamp of last CAPSLOCK press
 std::shared_mutex elementMutex; // Shared mutex for UI element access
-boost::asio::io_context io_context; // Boost.Asio io_context for managing asynchronous tasks
+//boost::asio::io_context io_context; // Boost.Asio io_context for managing asynchronous tasks
+BS::thread_pool pool(std::thread::hardware_concurrency());
+
 std::atomic<int> taskVersion{ 0 };// Global atomic version counter to track task validity
 std::unordered_set<std::wstring> processedTexts; // Set to keep track of processed texts
 
@@ -434,7 +436,7 @@ public:
             textRectQueue.push(textRect); // Add the TextRect to the queue
         }
         if (!speaking.load()) {
-            io_context.post(std::bind(&ProcessTextRectQueue::DequeueAndProcess, cancelFuture)); // Start processing if not already speaking
+            pool.detach_task(std::bind(&ProcessTextRectQueue::DequeueAndProcess, cancelFuture)); // Start processing if not already speaking
         }
     }
 
@@ -465,7 +467,7 @@ public:
         ProcessRectangle(textRect.rect, false, cancelFuture); // Clear the rectangle
 
         // Reset the speaking flag after task completion
-        io_context.post(std::bind(&ProcessTextRectQueue::DequeueAndProcess, cancelFuture)); // Trigger the next item in the queue
+        pool.detach_task(std::bind(&ProcessTextRectQueue::DequeueAndProcess, cancelFuture)); // Trigger the next item in the queue
     }
 
     // Clear the TextRect queue
@@ -526,7 +528,11 @@ void ReadElementText(CComPtr<IUIAutomationElement> pElement, std::shared_future<
 
                         ProcessTextRectQueue::Enqueue({ textStr, rect }, cancelFuture); // Enqueue the text and rectangle for processing
                         processedTexts.insert(textStr);  // Add the text to the set after enqueueing to avoid reprocessing
-                        DebugLog(textStr + L" TEXT and bounding rectangle pushed to queue."); // Log the enqueue action
+                        DebugLog(textStr + L" TEXT and bounding rectangle pushed to queue." + L"for rectangle: (" +
+                            std::to_wstring(rect.left) + L", " +
+                            std::to_wstring(rect.top) + L", " +
+                            std::to_wstring(rect.right) + L", " +
+                            std::to_wstring(rect.bottom) + L")"); // Log the enqueue action
                     }
                 }
             }
@@ -625,7 +631,7 @@ void StopCurrentProcesses() {
 
         if (rectangleDrawn.load()) {  // Clear the rectangle if one is drawn
             std::lock_guard<std::mutex> rectLock(rectMtx);
-            io_context.post([=]() {ProcessRectangle(currentRect, false, cancelFuture); }); // Clear the rectangle asynchronously
+            pool.detach_task([=]() {ProcessRectangle(currentRect, false, cancelFuture); }); // Clear the rectangle asynchronously
         }
 
         {   //Clear speech
@@ -659,8 +665,8 @@ void StopCurrentProcesses() {
 void ProcessNewElement(CComPtr<IUIAutomationElement> pElement) {
     // Increment the task version to invalidate all previous tasks
     int currentVersion = ++taskVersion;
-
-    io_context.dispatch([pElement, currentVersion]() {
+    
+    pool.submit_task([pElement, currentVersion]() {
         // If the current task version is outdated, skip this task
         if (currentVersion != taskVersion.load()) {
             DebugLog(L"Skipping outdated task."); // Log that the task is being skipped
@@ -777,14 +783,15 @@ void ReinitializeAutomation() {
 // Schedule reinitialization task
 // Sets up a periodic task to reinitialize UI Automation and speech synthesis components
 void ScheduleReinitialization() {
-    static boost::asio::steady_timer timer(io_context);
-
-    timer.expires_after(std::chrono::minutes(10)); // Set the timer to trigger every 10 minutes
-    timer.async_wait([&](const boost::system::error_code&) {
-        io_context.post(ReinitializeAutomation); // Reinitialize the components when the timer expires
-        ScheduleReinitialization(); // Reschedule the reinitialization task
-        });
+    // Submit the reinitialization task with a delay
+    pool.detach_task([]() {
+        while (true) {
+            std::this_thread::sleep_for(std::chrono::minutes(10)); // Wait for 10 minutes
+            ReinitializeAutomation(); // Reinitialize the components
+        }
+        }); // Detach the task so it runs independently
 }
+
 
 // Shutdown function to clean up resources
 // Handles the clean-up of hooks, COM objects, and other resources before exiting the application
@@ -871,7 +878,7 @@ void Initialize() {
 
         ScheduleReinitialization(); // Schedule periodic reinitialization of components
 
-        boost::asio::executor_work_guard<boost::asio::io_context::executor_type> work_guard(io_context.get_executor()); // Prevent the io_context from running out of work
+        //boost::asio::executor_work_guard<boost::asio::io_context::executor_type> work_guard(io_context.get_executor()); // Prevent the io_context from running out of work
 
         std::thread keyboardHookThread(SetLowLevelKeyboardHook); // Start the keyboard hook thread
         DebugLog(L"Keyboard hook thread started."); // Log the start of the keyboard hook thread
@@ -883,18 +890,17 @@ void Initialize() {
     }
 }
 
-// Updated Main Function
 // Entry point of the application, handles initialization, message loop, and shutdown
 int main() {
     DebugLog(L"Main function started."); // Log the start of the main function
+
     try {
         Initialize(); // Initialize the application
         DebugLog(L"Initialization successful."); // Log successful initialization
 
-        boost::thread_group threads; // Create a thread group for running the io_context
-        for (std::size_t i = 0; i < std::thread::hardware_concurrency(); ++i) {
-            threads.create_thread([&]() { io_context.run(); }); // Create and run threads to process io_context tasks
-        }
+        // Schedule any initial tasks needed using the thread pool
+        // For example, if you need to start periodic reinitialization:
+        ScheduleReinitialization();
 
         MSG msg;
         while (GetMessage(&msg, NULL, 0, 0)) {
@@ -902,8 +908,7 @@ int main() {
             DispatchMessage(&msg); // Process Windows messages
         }
 
-        io_context.stop(); // Stop the io_context when the message loop exits
-        threads.join_all(); // Wait for all threads to complete
+        pool.wait(); // Wait for all tasks to complete before shutting down
         Shutdown(); // Shutdown the application
     }
     catch (const std::exception& e) {
