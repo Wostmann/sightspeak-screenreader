@@ -96,11 +96,11 @@ void DebugLog(const std::wstring& message) {
 // Allows CAPSLOCK to be used for navigation commands instead of its usual function
 void ToggleCapsLockOverride() {
     capsLockOverride.store(!capsLockOverride.load()); // Toggle the override state
-    DebugLog(L"CAPSLOCK override " + std::wstring(capsLockOverride.load() ? L"enabled" : L"disabled"));
 }
 
 // Forward declaration of ProcessNewElement function
 void ProcessNewElement(CComPtr<IUIAutomationElement> pElement);
+void StopCurrentProcesses();
 
 // Function to move to the parent element
 // Used for navigating up the UI Automation tree
@@ -115,7 +115,6 @@ void MoveToParentElement() {
         hr = pControlWalker->GetParentElement(pPrevElement, &pParent); // Navigate to the parent element
         if (SUCCEEDED(hr) && pParent) {
             pPrevElement = pParent; // Update the current element to the parent
-            DebugLog(L"Moved to parent element");
             ProcessNewElement(pPrevElement); // Process the new parent element
         }
     }
@@ -134,7 +133,6 @@ void MoveToFirstChildElement() {
         hr = pControlWalker->GetFirstChildElement(pPrevElement, &pChild); // Navigate to the first child element
         if (SUCCEEDED(hr) && pChild) {
             pPrevElement = pChild; // Update the current element to the first child
-            DebugLog(L"Moved to first child element");
             ProcessNewElement(pPrevElement); // Process the new child element
         }
     }
@@ -153,7 +151,6 @@ void MoveToNextSiblingElement() {
         hr = pControlWalker->GetNextSiblingElement(pPrevElement, &pNextSibling); // Navigate to the next sibling element
         if (SUCCEEDED(hr) && pNextSibling) {
             pPrevElement = pNextSibling; // Update the current element to the next sibling
-            DebugLog(L"Moved to next sibling element");
             ProcessNewElement(pPrevElement); // Process the new sibling element
         }
     }
@@ -172,7 +169,6 @@ void MoveToPreviousSiblingElement() {
         hr = pControlWalker->GetPreviousSiblingElement(pPrevElement, &pPreviousSibling); // Navigate to the previous sibling element
         if (SUCCEEDED(hr) && pPreviousSibling) {
             pPrevElement = pPreviousSibling; // Update the current element to the previous sibling
-            DebugLog(L"Moved to previous sibling element");
             ProcessNewElement(pPrevElement); // Process the new sibling element
         }
     }
@@ -183,7 +179,6 @@ void MoveToPreviousSiblingElement() {
 void RedoCurrentElement() {
     std::shared_lock<std::shared_mutex> lock(elementMutex);  // Use shared_lock for read-only access
     if (pPrevElement) {
-        DebugLog(L"Redoing current element");
         ProcessNewElement(pPrevElement); // Reprocess the current element
     }
 }
@@ -194,15 +189,19 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
     if (nCode == HC_ACTION) {
         KBDLLHOOKSTRUCT* pKeyBoard = (KBDLLHOOKSTRUCT*)lParam; // Cast the lParam to KBDLLHOOKSTRUCT to access keyboard event data
         if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
+
+            // Detecting CTRL key press
+            if (pKeyBoard->vkCode == VK_LCONTROL || pKeyBoard->vkCode == VK_RCONTROL) { // Check for left or right CTRL
+                StopCurrentProcesses(); // Stop all processes
+            }
+
             if (pKeyBoard->vkCode == VK_CAPITAL) {
                 auto now = std::chrono::steady_clock::now();
                 if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastCapsLockPress).count() < 500 && capsLockFirstPress.load()) {
                     ToggleCapsLockOverride(); // Toggle CAPSLOCK override if double pressed within 500ms
-                    DebugLog(L"Double CAPSLOCK detected, toggling override.");
                     capsLockFirstPress = false;  // Reset the flag after the second press
                 }
                 else {
-                    DebugLog(L"Single CAPSLOCK press detected.");
                     capsLockFirstPress = true;  // Set the flag for the first press
                 }
                 lastCapsLockPress = now;
@@ -216,23 +215,18 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
                 switch (pKeyBoard->vkCode) {
                 case 'W':
                     MoveToParentElement(); // Navigate to parent element on CAPSLOCK+W
-                    DebugLog(L"CAPSLOCK+W: Move to parent element.");
                     break;
                 case 'S':
                     MoveToFirstChildElement(); // Navigate to first child element on CAPSLOCK+S
-                    DebugLog(L"CAPSLOCK+S: Move to first child element.");
                     break;
                 case 'D':
                     MoveToNextSiblingElement(); // Navigate to next sibling element on CAPSLOCK+D
-                    DebugLog(L"CAPSLOCK+D: Move to next sibling element.");
                     break;
                 case 'A':
                     MoveToPreviousSiblingElement(); // Navigate to previous sibling element on CAPSLOCK+A
-                    DebugLog(L"CAPSLOCK+A: Move to previous sibling element.");
                     break;
                 case 'E':
                     RedoCurrentElement(); // Redo the current element on CAPSLOCK+E
-                    DebugLog(L"CAPSLOCK+E: Redo current element.");
                     break;
                 }
             }
@@ -241,10 +235,10 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
     return CallNextHookEx(NULL, nCode, wParam, lParam); // Pass the event to the next hook in the chain
 }
 
+
 // Function to set the low-level keyboard hook
 // Hooks into the keyboard input stream to intercept keypresses for custom handling
 void SetLowLevelKeyboardHook() {
-    DebugLog(L"Setting low-level keyboard hook.");
 
     HHOOK hKeyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, NULL, 0);
     if (!hKeyboardHook) {
@@ -258,7 +252,6 @@ void SetLowLevelKeyboardHook() {
         DispatchMessage(&msg); // Process Windows messages
     }
 
-    DebugLog(L"Unhooking keyboard hook.");
     UnhookWindowsHookEx(hKeyboardHook); // Unhook the keyboard hook when the message loop exits
 }
 
@@ -282,21 +275,18 @@ void ProcessRectangle(const RECT& rect, bool draw, std::shared_future<void> canc
         return; // Exit if cancellation is requested
     }
 
-    auto start = std::chrono::steady_clock::now(); // Track the start time for performance logging
-
     try {
-        DebugLog(L"ProcessRectangle with action: " + std::to_wstring(draw) + L" for rectangle: (" +
-            std::to_wstring(rect.left) + L", " +
-            std::to_wstring(rect.top) + L", " +
-            std::to_wstring(rect.right) + L", " +
-            std::to_wstring(rect.bottom) + L")");
         HDC hdc = GetDC(NULL); // Get the device context for drawing on the screen
         if (hdc) {
             if (draw) {
                 // Delay handling is managed outside the critical section to avoid locking overhead
                 HGDIOBJ hOldPen = SelectObject(hdc, hPen); // Select the pen for drawing
                 HGDIOBJ hOldBrush = SelectObject(hdc, hBrush); // Select the brush for drawing
-                std::this_thread::sleep_for(std::chrono::milliseconds(50)); // Sleep to simulate drawing delay
+                std::this_thread::sleep_for(std::chrono::milliseconds(30)); // Sleep to simulate drawing delay
+                if (cancelFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+                    return; // Exit if cancellation is requested
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(30)); // Sleep to simulate drawing delay
                 if (cancelFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
                     return; // Exit if cancellation is requested
                 }
@@ -324,9 +314,6 @@ void ProcessRectangle(const RECT& rect, bool draw, std::shared_future<void> canc
     catch (const std::exception& e) {
         DebugLog(L"Exception in ProcessRectangle: " + Utf8ToWstring(e.what())); // Log any exceptions that occur
     }
-    auto end = std::chrono::steady_clock::now(); // Track the end time for performance logging
-    std::chrono::duration<double> elapsed_seconds = end - start;
-    DebugLog(L"Processed rectangle " + std::to_wstring(draw) + L" in " + std::to_wstring(elapsed_seconds.count()) + L" seconds."); // Log the time taken to process the rectangle
 }
 
 // Function to print text to the console and log it
@@ -334,7 +321,6 @@ void ProcessRectangle(const RECT& rect, bool draw, std::shared_future<void> canc
 void PrintText(const std::wstring& text) {
     std::wcout << text << std::endl; // Output the text to the console
     std::wcout.flush(); // Flush the console output
-    DebugLog(L"Printed text to console: " + text); // Log the printed text
 }
 
 // Task to speak text and manage rectangle
@@ -345,12 +331,10 @@ std::future<void> SpeakTextTask(const std::wstring& textToSpeak, std::shared_fut
         if (cancelFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
             return; // Exit if cancellation is requested
         }
-        DebugLog(L"SpeakTextTask started."); // Log task start
 
         try {
             // If the text is empty or cancellation is requested, exit early
             if (textToSpeak.empty() || cancelFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-                DebugLog(L"Task cancelled before speaking."); // Log cancellation
                 return;
             }
 
@@ -390,7 +374,6 @@ std::future<void> SpeakTextTask(const std::wstring& textToSpeak, std::shared_fut
             while (true) {
                 // Check for cancellation every 10 milliseconds
                 if (cancelFuture.wait_for(std::chrono::milliseconds(10)) == std::future_status::ready) {
-                    DebugLog(L"Task cancelled during speech."); // Log cancellation during speech
                     break; // Exit the loop if cancellation is requested
                 }
 
@@ -405,14 +388,12 @@ std::future<void> SpeakTextTask(const std::wstring& textToSpeak, std::shared_fut
 
                     // Check if the speech synthesis has completed
                     if (status.dwRunningState == SPRS_DONE) {
-                        DebugLog(L"Speech done for text: " + textToSpeak); // Log speech completion
                         break; // Exit the loop if the speech is done
                     }
                 }
             }
 
             speaking.store(false); // Reset the speaking flag to indicate speech is complete
-            DebugLog(L"Finished speaking text: " + textToSpeak); // Log the completion of the task
         }
         catch (const std::exception& e) {
             // Log any exceptions that occur during the task
@@ -455,7 +436,6 @@ public:
             textRect = textRectQueue.front(); // Get the next TextRect from the queue
             textRectQueue.pop(); // Remove it from the queue
         }
-        DebugLog(L"Dequeued " + textRect.text); // Log the dequeued text
         // Process the rectangle drawing first
         std::async(std::launch::async, ProcessRectangle, textRect.rect, true, cancelFuture); // Draw the rectangle asynchronously
 
@@ -497,9 +477,11 @@ void ReadElementText(CComPtr<IUIAutomationElement> pElement, std::shared_future<
     }
 
     try {
+        // Process the text content and bounding rectangle
         CComPtr<IUIAutomationTextPattern> pTextPattern = NULL;
         HRESULT hr = pElement->GetCurrentPatternAs(UIA_TextPatternId, IID_PPV_ARGS(&pTextPattern)); // Get the text pattern from the element
         if (SUCCEEDED(hr) && pTextPattern) {
+
             CComPtr<IUIAutomationTextRange> pTextRange = NULL;
             hr = pTextPattern->get_DocumentRange(&pTextRange); // Get the text range from the text pattern
             if (SUCCEEDED(hr) && pTextRange) {
@@ -509,35 +491,17 @@ void ReadElementText(CComPtr<IUIAutomationElement> pElement, std::shared_future<
                     std::wstring textStr(static_cast<wchar_t*>(text)); // Convert the BSTR text to std::wstring
                     if (!textStr.empty() && processedTexts.find(textStr) == processedTexts.end()) {
                         RECT rect = {};
-                        SAFEARRAY* pRects = NULL;
-                        hr = pTextRange->GetBoundingRectangles(&pRects); // Get the bounding rectangles for the text
-                        if (SUCCEEDED(hr) && pRects) {
-                            LONG lBound = 0, uBound = 0;
-                            SafeArrayGetLBound(pRects, 1, &lBound); // Get the lower bound of the SAFEARRAY
-                            SafeArrayGetUBound(pRects, 1, &uBound); // Get the upper bound of the SAFEARRAY
-                            for (LONG i = lBound; i <= uBound; i += 4) {
-                                double rectArr[4];
-                                SafeArrayGetElement(pRects, &i, &rectArr); // Extract the rectangle coordinates from the SAFEARRAY
-                                rect.left = static_cast<LONG>(rectArr[0]);
-                                rect.top = static_cast<LONG>(rectArr[1]);
-                                rect.right = static_cast<LONG>(rectArr[2]);
-                                rect.bottom = static_cast<LONG>(rectArr[3]);
-                            }
-                            SafeArrayDestroy(pRects); // Destroy the SAFEARRAY after use
+                        hr = pElement->get_CurrentBoundingRectangle(&rect); // Get the bounding rectangle of the UI element
+                        if (SUCCEEDED(hr)) {
+                            ProcessTextRectQueue::Enqueue({ textStr, rect }, cancelFuture); // Enqueue the text and rectangle for processing
+                            processedTexts.insert(textStr);  // Add the text to the set after enqueueing to avoid reprocessing
                         }
-
-                        ProcessTextRectQueue::Enqueue({ textStr, rect }, cancelFuture); // Enqueue the text and rectangle for processing
-                        processedTexts.insert(textStr);  // Add the text to the set after enqueueing to avoid reprocessing
-                        DebugLog(textStr + L" TEXT and bounding rectangle pushed to queue." + L"for rectangle: (" +
-                            std::to_wstring(rect.left) + L", " +
-                            std::to_wstring(rect.top) + L", " +
-                            std::to_wstring(rect.right) + L", " +
-                            std::to_wstring(rect.bottom) + L")"); // Log the enqueue action
                     }
                 }
             }
         }
 
+        // Process the name and bounding rectangle
         CComBSTR name;
         hr = pElement->get_CurrentName(&name); // Get the name property of the UI element
         if (SUCCEEDED(hr) && name != NULL) {
@@ -548,7 +512,6 @@ void ReadElementText(CComPtr<IUIAutomationElement> pElement, std::shared_future<
                 if (SUCCEEDED(hr)) {
                     ProcessTextRectQueue::Enqueue({ nameStr, rect }, cancelFuture); // Enqueue the name and rectangle for processing
                     processedTexts.insert(nameStr);  // Add the name to the set after enqueueing to avoid reprocessing
-                    DebugLog(nameStr + L" NAME and bounding rectangle pushed to queue."); // Log the enqueue action
                 }
             }
         }
@@ -557,6 +520,7 @@ void ReadElementText(CComPtr<IUIAutomationElement> pElement, std::shared_future<
         DebugLog(L"Exception in ReadElementText: " + Utf8ToWstring(e.what())); // Log any exceptions that occur
     }
 }
+
 
 // Collect UI elements using breadth-first search
 // Traverses the UI Automation tree to gather elements and process their text and rectangles
@@ -615,7 +579,6 @@ void CollectElementsBFS(CComPtr<IUIAutomationElement> pElement, std::shared_futu
 // Function to stop current processes asynchronously
 // Cancels all active tasks and clears the processing queue
 void StopCurrentProcesses() {
-    DebugLog(L"Entering StopCurrentProcesses.");
 
     try {
         // Signal cancellation of current tasks
@@ -641,9 +604,6 @@ void StopCurrentProcesses() {
                 if (FAILED(hr)) {
                     DebugLog(L"Failed to stop speech: " + std::to_wstring(hr)); // Log failure to stop speech
                 }
-                else {
-                    DebugLog(L"Successfully stopped speech."); // Log success in stopping speech
-                }
             }
         }
 
@@ -654,8 +614,6 @@ void StopCurrentProcesses() {
     catch (const std::exception& e) {
         DebugLog(L"Exception in StopCurrentProcessesAsync: " + Utf8ToWstring(e.what())); // Log any general exceptions
     }
-
-    DebugLog(L"Completed StopCurrentProcesses."); // Log the completion of the process stopping
 }
 
 
@@ -666,10 +624,9 @@ void ProcessNewElement(CComPtr<IUIAutomationElement> pElement) {
     // Increment the task version to invalidate all previous tasks
     int currentVersion = ++taskVersion;
     
-    pool.submit_task([pElement, currentVersion]() {
+    pool.detach_task([pElement, currentVersion]() {
         // If the current task version is outdated, skip this task
         if (currentVersion != taskVersion.load()) {
-            DebugLog(L"Skipping outdated task."); // Log that the task is being skipped
             return;
         }
 
@@ -678,7 +635,6 @@ void ProcessNewElement(CComPtr<IUIAutomationElement> pElement) {
         // If the task is still valid, proceed with BFS to collect UI elements
         if (currentVersion == taskVersion.load()) {
             CollectElementsBFS(pElement, cancelFuture);
-            DebugLog(L"BFS completed."); // Log completion of BFS
         }
         });
 }
@@ -703,14 +659,11 @@ bool IsDifferentElement(CComPtr<IUIAutomationElement> pElement) {
 // Process cursor position and detect UI elements
 // Retrieves the UI element under the cursor and triggers processing if it has changed
 void ProcessCursorPosition(POINT point) {
-    DebugLog(L"Processing cursor position: (" + std::to_wstring(point.x) + L", " + std::to_wstring(point.y) + L")");
-
     CComPtr<IUIAutomationElement> pElement = NULL;
     HRESULT hr = pAutomation->ElementFromPoint(point, &pElement); // Get the UI element under the cursor
 
     if (SUCCEEDED(hr) && pElement) {
         if (IsDifferentElement(pElement)) { // Check if the element is different from the previous one
-            DebugLog(L"New element detected.");
             pPrevElement.Release(); // Release the previous element
             pPrevElement = pElement; // Update the previous element to the current one
             ProcessNewElement(pElement); // Process the new element
@@ -727,7 +680,7 @@ LRESULT CALLBACK MouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
     if (nCode >= 0 && wParam == WM_MOUSEMOVE) {
         POINT point;
         GetCursorPos(&point); // Get the current cursor position
-        ProcessCursorPosition(point); // Process the cursor position to detect UI elements
+        pool.detach_task([point]() {ProcessCursorPosition(point);}); // Process the cursor position to detect UI elements
     }
     return CallNextHookEx(hMouseHook, nCode, wParam, lParam); // Pass the event to the next hook in the chain
 }
@@ -735,7 +688,6 @@ LRESULT CALLBACK MouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
 // Reinitialize UI Automation and COM components
 // Resets and reinitializes UI Automation and speech synthesis components periodically
 void ReinitializeAutomation() {
-    DebugLog(L"Reinitializing UI Automation and COM components");
 
     if (pAutomation) {
         pAutomation.Release(); // Release the existing UI Automation instance
@@ -776,8 +728,6 @@ void ReinitializeAutomation() {
         pVoice->SetVolume(100); // Set the volume of the speech synthesis
         pVoice->SetRate(2); // Set the rate of the speech synthesis
     }
-
-    DebugLog(L"Successfully reinitialized UI Automation and COM components"); // Log success in reinitialization
 }
 
 // Schedule reinitialization task
@@ -796,7 +746,6 @@ void ScheduleReinitialization() {
 // Shutdown function to clean up resources
 // Handles the clean-up of hooks, COM objects, and other resources before exiting the application
 void Shutdown() {
-    DebugLog(L"Shutting down application.");
 
     UnhookWindowsHookEx(hMouseHook); // Unhook the mouse hook
 
@@ -809,7 +758,6 @@ void Shutdown() {
 
     CoUninitialize(); // Uninitialize COM
 
-    DebugLog(L"Application exited."); // Log the application shutdown
 }
 
 // Mouse Input Thread Function
@@ -834,7 +782,6 @@ void MouseInputThread() {
 // Updated Initialize Function
 // Sets up the initial state, including console buffer, COM initialization, and hook setup
 void Initialize() {
-    DebugLog(L"Initialize function started."); // Log the start of initialization
     try {
         SetConsoleBufferSize(); // Set the console buffer size for better output visibility
         _CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF); // Enable memory leak detection
@@ -881,7 +828,6 @@ void Initialize() {
         //boost::asio::executor_work_guard<boost::asio::io_context::executor_type> work_guard(io_context.get_executor()); // Prevent the io_context from running out of work
 
         std::thread keyboardHookThread(SetLowLevelKeyboardHook); // Start the keyboard hook thread
-        DebugLog(L"Keyboard hook thread started."); // Log the start of the keyboard hook thread
         keyboardHookThread.detach(); // Detach the thread to allow it to run independently
     }
     catch (const std::exception& e) {
@@ -892,11 +838,9 @@ void Initialize() {
 
 // Entry point of the application, handles initialization, message loop, and shutdown
 int main() {
-    DebugLog(L"Main function started."); // Log the start of the main function
 
     try {
         Initialize(); // Initialize the application
-        DebugLog(L"Initialization successful."); // Log successful initialization
 
         // Schedule any initial tasks needed using the thread pool
         // For example, if you need to start periodic reinitialization:

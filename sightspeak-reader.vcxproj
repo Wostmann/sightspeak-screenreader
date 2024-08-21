@@ -113,8 +113,7 @@
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions);NOMINMAX;WIN32_LEAN_AND_MEAN;BOOST_ASIO_DISABLE_STD_CALL;_WIN32_WINNT=0x0601</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>
-      </AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)external</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -155,7 +154,8 @@
     <ClCompile Include="sightspeak-reader.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="external\boost_1_85_0\boost\asio.hpp" />
+    <ClInclude Include="external\BS_thread_pool.hpp" />
+    <ClInclude Include="external\BS_thread_pool_utils.hpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

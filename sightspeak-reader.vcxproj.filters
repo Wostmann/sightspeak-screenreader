@@ -13,6 +13,9 @@
       <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
       <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
     </Filter>
+    <Filter Include="external">
+      <UniqueIdentifier>{cd54d773-2862-4120-8f92-67f158a13be2}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="sightspeak-reader.cpp">
@@ -20,8 +23,11 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="external\boost_1_85_0\boost\asio.hpp">
-      <Filter>Header Files</Filter>
+    <ClInclude Include="external\BS_thread_pool.hpp">
+      <Filter>external</Filter>
+    </ClInclude>
+    <ClInclude Include="external\BS_thread_pool_utils.hpp">
+      <Filter>external</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>
