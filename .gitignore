@@ -8,6 +8,8 @@
 /Debug/
 /Release/
 sightspe.467d605f/
+# Ignore all .lib files in external/boost/lib/
+/external/boost/lib/*.lib
 
 # Ignore specific file types
 *.exe

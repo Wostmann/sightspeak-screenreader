@@ -282,14 +282,17 @@ void ProcessRectangle(const RECT& rect, bool draw, std::shared_future<void> canc
                 // Delay handling is managed outside the critical section to avoid locking overhead
                 HGDIOBJ hOldPen = SelectObject(hdc, hPen); // Select the pen for drawing
                 HGDIOBJ hOldBrush = SelectObject(hdc, hBrush); // Select the brush for drawing
-                std::this_thread::sleep_for(std::chrono::milliseconds(30)); // Sleep to simulate drawing delay
                 if (cancelFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
                     return; // Exit if cancellation is requested
                 }
-                std::this_thread::sleep_for(std::chrono::milliseconds(30)); // Sleep to simulate drawing delay
+                std::this_thread::sleep_for(std::chrono::milliseconds(50)); // Sleep to simulate drawing delay
                 if (cancelFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
                     return; // Exit if cancellation is requested
                 }
+                //std::this_thread::sleep_for(std::chrono::milliseconds(30)); // Sleep to simulate drawing delay
+                //if (cancelFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+                //    return; // Exit if cancellation is requested
+                //}
                 Rectangle(hdc, rect.left, rect.top, rect.right, rect.bottom); // Draw the rectangle
 
                 SelectObject(hdc, hOldPen); // Restore the previous pen
