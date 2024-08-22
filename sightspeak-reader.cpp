@@ -271,9 +271,7 @@ void SetConsoleBufferSize() {
 // Function to process a rectangle on the screen
 // Draws or clears a rectangle around the specified area
 void ProcessRectangle(const RECT& rect, bool draw, std::shared_future<void> cancelFuture) {
-    if (cancelFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-        return; // Exit if cancellation is requested
-    }
+    if (cancelFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) { return; } // Exit if cancellation is requested
 
     try {
         HDC hdc = GetDC(NULL); // Get the device context for drawing on the screen
@@ -282,17 +280,11 @@ void ProcessRectangle(const RECT& rect, bool draw, std::shared_future<void> canc
                 // Delay handling is managed outside the critical section to avoid locking overhead
                 HGDIOBJ hOldPen = SelectObject(hdc, hPen); // Select the pen for drawing
                 HGDIOBJ hOldBrush = SelectObject(hdc, hBrush); // Select the brush for drawing
-                if (cancelFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-                    return; // Exit if cancellation is requested
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(50)); // Sleep to simulate drawing delay
-                if (cancelFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-                    return; // Exit if cancellation is requested
-                }
-                //std::this_thread::sleep_for(std::chrono::milliseconds(30)); // Sleep to simulate drawing delay
-                //if (cancelFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-                //    return; // Exit if cancellation is requested
-                //}
+                if (cancelFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) { return; } // Exit if cancellation is requested
+                std::this_thread::sleep_for(std::chrono::milliseconds(30)); // Sleep to simulate drawing delay
+                if (cancelFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) { return; } // Exit if cancellation is requested
+                std::this_thread::sleep_for(std::chrono::milliseconds(30)); // Sleep to simulate drawing delay
+                if (cancelFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) { return; } // Exit if cancellation is requested
                 Rectangle(hdc, rect.left, rect.top, rect.right, rect.bottom); // Draw the rectangle
 
                 SelectObject(hdc, hOldPen); // Restore the previous pen
@@ -328,82 +320,72 @@ void PrintText(const std::wstring& text) {
 
 // Task to speak text and manage rectangle
 // Asynchronously processes text for speech and manages the associated rectangle
-std::future<void> SpeakTextTask(const std::wstring& textToSpeak, std::shared_future<void> cancelFuture) {
-    return std::async(std::launch::async, [=]() {
-        // Check if the task should be canceled before starting
-        if (cancelFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-            return; // Exit if cancellation is requested
-        }
+void SpeakTextTask(const std::wstring& textToSpeak, std::shared_future<void> cancelFuture) {
+    // Check if the task should be canceled before starting
+    if (cancelFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) { return; } // Exit if cancellation is requested
 
-        try {
-            // If the text is empty or cancellation is requested, exit early
-            if (textToSpeak.empty() || cancelFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-                return;
-            }
+    try {
+        // If the text is empty or cancellation is requested, exit early
+        if (cancelFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) { return; } // Exit if cancellation is requested
 
-            PrintText(textToSpeak); // Output the text to the console and log it
+        PrintText(textToSpeak); // Output the text to the console and log it
 
-            speaking.store(true); // Set the speaking flag to true, indicating speech is in progress
+        speaking.store(true); // Set the speaking flag to true, indicating speech is in progress
 
-            {
-                // Lock the speech synthesis resource to ensure thread-safe access
-                std::lock_guard<std::mutex> lock(pVoiceMtx);
-                if (pVoice) { // Check if the speech synthesis object is valid
-                    // Check for cancellation again before starting speech
-                    if (cancelFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-                        speaking.store(false); // Reset the speaking flag if canceled
-                        return;
-                    }
+        {
+            // Lock the speech synthesis resource to ensure thread-safe access
+            std::lock_guard<std::mutex> lock(pVoiceMtx);
+            if (pVoice) { // Check if the speech synthesis object is valid
+                // Check for cancellation again before starting speech
+                if (cancelFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) { return; } // Exit if cancellation is requested
 
-                    // Purge any previous speech to start fresh
-                    HRESULT hr = pVoice->Speak(nullptr, SPF_PURGEBEFORESPEAK, nullptr);
-                    if (FAILED(hr)) {
-                        DebugLog(L"Failed to purge speech: " + std::to_wstring(hr)); // Log failure to purge
-                        speaking.store(false); // Reset the speaking flag if purging failed
-                        return;
-                    }
-
-                    // Start speaking the text asynchronously
-                    hr = pVoice->Speak(textToSpeak.c_str(), SPF_ASYNC, nullptr);
-                    if (FAILED(hr)) {
-                        DebugLog(L"Failed to speak text: " + textToSpeak + L" Error: " + std::to_wstring(hr)); // Log failure to speak
-                        speaking.store(false); // Reset the speaking flag if speaking failed
-                        return;
-                    }
-                }
-            }
-
-            SPVOICESTATUS status; // Structure to hold the status of the speech synthesis
-            while (true) {
-                // Check for cancellation every 10 milliseconds
-                if (cancelFuture.wait_for(std::chrono::milliseconds(10)) == std::future_status::ready) {
-                    break; // Exit the loop if cancellation is requested
+                // Purge any previous speech to start fresh
+                HRESULT hr = pVoice->Speak(nullptr, SPF_PURGEBEFORESPEAK, nullptr);
+                if (FAILED(hr)) {
+                    DebugLog(L"Failed to purge speech: " + std::to_wstring(hr)); // Log failure to purge
+                    speaking.store(false); // Reset the speaking flag if purging failed
+                    return;
                 }
 
-                // Lock the speech synthesis resource to check its status
-                std::lock_guard<std::mutex> lock(pVoiceMtx);
-                if (pVoice) { // Check if the speech synthesis object is valid
-                    HRESULT hr = pVoice->GetStatus(&status, nullptr); // Get the current status of the speech synthesis
-                    if (FAILED(hr)) {
-                        DebugLog(L"Failed to get status: " + std::to_wstring(hr)); // Log failure to get status
-                        break; // Exit the loop if getting the status failed
-                    }
-
-                    // Check if the speech synthesis has completed
-                    if (status.dwRunningState == SPRS_DONE) {
-                        break; // Exit the loop if the speech is done
-                    }
+                // Start speaking the text asynchronously
+                hr = pVoice->Speak(textToSpeak.c_str(), SPF_ASYNC, nullptr);
+                if (FAILED(hr)) {
+                    DebugLog(L"Failed to speak text: " + textToSpeak + L" Error: " + std::to_wstring(hr)); // Log failure to speak
+                    speaking.store(false); // Reset the speaking flag if speaking failed
+                    return;
                 }
             }
+        }
 
-            speaking.store(false); // Reset the speaking flag to indicate speech is complete
+        SPVOICESTATUS status; // Structure to hold the status of the speech synthesis
+        while (true) {
+            // Check for cancellation every 10 milliseconds
+            if (cancelFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) { return; } // Exit if cancellation is requested
+
+            // Lock the speech synthesis resource to check its status
+            std::lock_guard<std::mutex> lock(pVoiceMtx);
+            if (pVoice) { // Check if the speech synthesis object is valid
+                HRESULT hr = pVoice->GetStatus(&status, nullptr); // Get the current status of the speech synthesis
+                if (FAILED(hr)) {
+                    DebugLog(L"Failed to get status: " + std::to_wstring(hr)); // Log failure to get status
+                    break; // Exit the loop if getting the status failed
+                }
+
+                // Check if the speech synthesis has completed
+                if (status.dwRunningState == SPRS_DONE) {
+                    break; // Exit the loop if the speech is done
+                }
+            }
         }
-        catch (const std::exception& e) {
-            // Log any exceptions that occur during the task
-            DebugLog(L"Exception in SpeakTextTask: " + Utf8ToWstring(e.what()));
-        }
-        });
+
+        speaking.store(false); // Reset the speaking flag to indicate speech is complete
+    }
+    catch (const std::exception& e) {
+        // Log any exceptions that occur during the task
+        DebugLog(L"Exception in SpeakTextTask: " + Utf8ToWstring(e.what()));
+    }
 }
+
 
 // Class to manage the queue for processing TextRect objects
 // Handles the queuing and processing of text and associated rectangles asynchronously
@@ -412,9 +394,7 @@ public:
     // Enqueue a TextRect object for processing
     // This function adds a TextRect to the queue and triggers processing if not already speaking
     static void Enqueue(TextRect textRect, std::shared_future<void> cancelFuture) {
-        if (cancelFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-            return; // Exit if cancellation is requested
-        }
+        if (cancelFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) { return; } // Exit if cancellation is requested
         {
             std::lock_guard<std::mutex> lock(queueMutex);
             textRectQueue.push(textRect); // Add the TextRect to the queue
@@ -425,7 +405,7 @@ public:
     }
 
     // Dequeue and process the next TextRect in the queue
-    // Handles the drawing and speaking of the text and rectangle
+// Handles the drawing and speaking of the text and rectangle
     static void DequeueAndProcess(std::shared_future<void> cancelFuture) {
         if (textRectQueue.empty() || cancelFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
             speaking.store(false); // Reset the speaking flag if queue is empty or canceled
@@ -439,13 +419,16 @@ public:
             textRect = textRectQueue.front(); // Get the next TextRect from the queue
             textRectQueue.pop(); // Remove it from the queue
         }
+
         // Process the rectangle drawing first
-        std::async(std::launch::async, ProcessRectangle, textRect.rect, true, cancelFuture); // Draw the rectangle asynchronously
-
+        auto rectFuture = pool.submit_task([&]() {ProcessRectangle(textRect.rect, true, cancelFuture); });
         // Handle the text and rectangle in a non-blocking way
-        std::future<void> future = SpeakTextTask(textRect.text, cancelFuture); // Speak the text
-        future.get(); // Wait for the speaking task to complete
+        auto future = pool.submit_task([&]() {
+            SpeakTextTask(textRect.text, cancelFuture); // Speak the text
+            });
 
+        future.get(); // Wait for the speaking task to complete
+        rectFuture.get();
         // Clear the rectangle after speaking is done
         ProcessRectangle(textRect.rect, false, cancelFuture); // Clear the rectangle
 
@@ -475,9 +458,7 @@ std::atomic<bool> ProcessTextRectQueue::speaking = false; // Initialize the stat
 // Function to read text and rectangle from a UI element
 // Extracts text and bounding rectangles from a UI element for processing
 void ReadElementText(CComPtr<IUIAutomationElement> pElement, std::shared_future<void> cancelFuture) {
-    if (cancelFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-        return;  // Exit if cancellation is requested
-    }
+    if (cancelFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) { return; } // Exit if cancellation is requested
 
     try {
         // Process the text content and bounding rectangle
