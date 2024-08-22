@@ -3,6 +3,19 @@
 ##
 ## Get latest from https://github.com/github/gitignore/blob/master/VisualStudio.gitignore
 
+# Ignore build output directories
+/x64/
+/Debug/
+/Release/
+sightspe.467d605f/
+
+# Ignore specific file types
+*.exe
+*.pdb
+*.ilk
+*.idb
+*.tlog
+
 # User-specific files
 *.rsuser
 *.suo
