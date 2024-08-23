@@ -3,6 +3,7 @@
 #include <Ws2tcpip.h>
 #include <atlbase.h>
 #include <UIAutomation.h>
+#include <shellscalingapi.h>
 #include <tchar.h>
 #include <chrono>
 #include <mutex>
@@ -78,6 +79,9 @@ BS::thread_pool pool(std::thread::hardware_concurrency());
 
 std::atomic<int> taskVersion{ 0 };// Global atomic version counter to track task validity
 std::unordered_set<std::wstring> processedTexts; // Set to keep track of processed texts
+
+float scaleX = 1.0f;
+float scaleY = 1.0f;
 
 std::mutex cancelMtx; // Mutex for canceling tasks
 std::promise<void> cancelPromise; // Promise to signal cancellation
@@ -273,6 +277,14 @@ void SetConsoleBufferSize() {
 void ProcessRectangle(const RECT& rect, bool draw, std::shared_future<void> cancelFuture) {
     if (cancelFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) { return; } // Exit if cancellation is requested
 
+    // Get the DPI scaling factor
+    RECT scaledRect = {
+        static_cast<LONG>(rect.left * scaleX),
+        static_cast<LONG>(rect.top * scaleY),
+        static_cast<LONG>(rect.right * scaleX),
+        static_cast<LONG>(rect.bottom * scaleY)
+    };
+
     try {
         HDC hdc = GetDC(NULL); // Get the device context for drawing on the screen
         if (hdc) {
@@ -280,12 +292,27 @@ void ProcessRectangle(const RECT& rect, bool draw, std::shared_future<void> canc
                 // Delay handling is managed outside the critical section to avoid locking overhead
                 HGDIOBJ hOldPen = SelectObject(hdc, hPen); // Select the pen for drawing
                 HGDIOBJ hOldBrush = SelectObject(hdc, hBrush); // Select the brush for drawing
-                if (cancelFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) { return; } // Exit if cancellation is requested
+
+                if (cancelFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+                    ReleaseDC(NULL, hdc); // Release the device context before returning
+                    return;
+                } // Exit if cancellation is requested
+
                 std::this_thread::sleep_for(std::chrono::milliseconds(30)); // Sleep to simulate drawing delay
-                if (cancelFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) { return; } // Exit if cancellation is requested
+
+                if (cancelFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+                    ReleaseDC(NULL, hdc); // Release the device context before returning
+                    return;
+                } // Exit if cancellation is requested
+
                 std::this_thread::sleep_for(std::chrono::milliseconds(30)); // Sleep to simulate drawing delay
-                if (cancelFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) { return; } // Exit if cancellation is requested
-                Rectangle(hdc, rect.left, rect.top, rect.right, rect.bottom); // Draw the rectangle
+
+                if (cancelFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+                    ReleaseDC(NULL, hdc); // Release the device context before returning
+                    return;
+                } // Exit if cancellation is requested
+
+                Rectangle(hdc, scaledRect.left, scaledRect.top, scaledRect.right, scaledRect.bottom); // Draw the rectangle
 
                 SelectObject(hdc, hOldPen); // Restore the previous pen
                 SelectObject(hdc, hOldBrush); // Restore the previous brush
@@ -293,11 +320,11 @@ void ProcessRectangle(const RECT& rect, bool draw, std::shared_future<void> canc
                 {
                     // Lock the rectangle resource to ensure thread-safe access
                     std::lock_guard<std::mutex> rectLock(rectMtx);
-                    currentRect = rect; // Update the current rectangle
+                    currentRect = rect; // Update the current rectangle with the scaled rectangle
                 }
             }
             else {
-                InvalidateRect(NULL, &rect, TRUE); // Clear the rectangle
+                InvalidateRect(NULL, &scaledRect, TRUE); // Clear the rectangle
                 rectangleDrawn.store(false); // Mark the rectangle as not drawn
             }
             ReleaseDC(NULL, hdc); // Release the device context
@@ -310,6 +337,7 @@ void ProcessRectangle(const RECT& rect, bool draw, std::shared_future<void> canc
         DebugLog(L"Exception in ProcessRectangle: " + Utf8ToWstring(e.what())); // Log any exceptions that occur
     }
 }
+
 
 // Function to print text to the console and log it
 // Outputs text to the console and also logs it for debugging
@@ -770,7 +798,17 @@ void Initialize() {
         SetConsoleBufferSize(); // Set the console buffer size for better output visibility
         _CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF); // Enable memory leak detection
         if (_setmode(_fileno(stdout), _O_U16TEXT) == -1) throw std::runtime_error("Failed to set console mode"); // Set the console mode for wide character output
+        HRESULT hrDPI = SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE);
+        HDC hdc = GetDC(NULL);
+        int dpiX = GetDeviceCaps(hdc, LOGPIXELSX);
+        int dpiY = GetDeviceCaps(hdc, LOGPIXELSY);
+        float scaleX = dpiX / 96.0f;
+        float scaleY = dpiY / 96.0f;
+        ReleaseDC(NULL, hdc);
 
+        if (FAILED(hrDPI)) {
+            DebugLog(L"Failed to set DPI awareness: " + std::to_wstring(hrDPI));
+        }
         HRESULT hr = CoInitialize(NULL); // Initialize COM
         if (FAILED(hr)) {
             DebugLog(L"Failed to initialize COM library: " + std::to_wstring(hr)); // Log failure to initialize COM
