@@ -5,6 +5,7 @@
 #include <UIAutomation.h>
 #include <shellscalingapi.h>
 #include <tchar.h>
+#include <cstdlib>
 #include <chrono>
 #include <mutex>
 #include <thread>
@@ -187,6 +188,7 @@ void RedoCurrentElement() {
     }
 }
 
+
 // Low-level keyboard procedure to handle keyboard shortcuts
 // Hooks into keyboard input to detect and handle specific key combinations for navigation
 LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
@@ -238,6 +240,7 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
     }
     return CallNextHookEx(NULL, nCode, wParam, lParam); // Pass the event to the next hook in the chain
 }
+
 
 
 // Function to set the low-level keyboard hook

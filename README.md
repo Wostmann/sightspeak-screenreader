@@ -52,7 +52,7 @@ These commands allow for efficient navigation through UI elements and control ov
 - Outline Refining: The problem where rectangles will be drawn and then prematurely deleted on some elements will be debugged.
 - Application Detection: While using SightSpeak, we hope to be able to tell what applications are being run such as if another screen reader is being run, or which web browser is currently active to avoid errors and improve efficiency. 
 
-## Contributing
+## Contributions
 
 We welcome contributions to the project. Please fork the repository and submit a pull request with your changes. Be sure to include detailed commit messages and documentation for any new features or bug fixes.
 
